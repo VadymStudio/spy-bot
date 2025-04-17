@@ -25,7 +25,7 @@ dp = Dispatcher(bot, storage=storage)
 
 # Глобальні змінні
 maintenance_mode = False
-active_users = set()
+active_users = set()  # Зберігає всіх, хто натискав /start
 LOCATIONS = [
     "Аеропорт", "Банк", "Пляж", "Казино", "Цирк", "Школа", "Лікарня",
     "Готель", "Музей", "Ресторан", "Театр", "Парк", "Космічна станція"
@@ -53,11 +53,12 @@ async def maintenance_on(message: types.Message):
     global maintenance_mode, rooms
     maintenance_mode = True
     active_users.add(message.from_user.id)
+    rooms.clear()  # Очищаємо кімнати, але зберігаємо active_users
     for user_id in active_users:
-        await bot.send_message(user_id, "Увага! Бот переходить на технічне обслуговування. Усі ігри завершено.")
-    rooms.clear()
-    active_users.clear()
-    active_users.add(message.from_user.id)
+        try:
+            await bot.send_message(user_id, "Увага! Бот переходить на технічне обслуговування. Усі ігри завершено.")
+        except Exception as e:
+            logging.error(f"Failed to send maintenance_on message to {user_id}: {e}")
     await message.reply("Технічне обслуговування увімкнено.")
 
 @dp.message_handler(commands=['maintenance_off'])
@@ -68,16 +69,19 @@ async def maintenance_off(message: types.Message):
     global maintenance_mode
     maintenance_mode = False
     active_users.add(message.from_user.id)
-    await message.reply("Технічне обслуговування вимкнено. Бот знову доступний для гри.")
     for user_id in active_users:
-        await bot.send_message(user_id, "Технічне обслуговування завершено! Бот знову доступний для гри.")
+        try:
+            await bot.send_message(user_id, "Технічне обслуговування завершено! Бот знову доступний для гри.")
+        except Exception as e:
+            logging.error(f"Failed to send maintenance_off message to {user_id}: {e}")
+    await message.reply("Технічне обслуговування вимкнено.")
 
 # Команда /start
 @dp.message_handler(commands=['start'])
 async def send_welcome(message: types.Message):
+    active_users.add(message.from_user.id)  # Додаємо користувача до active_users
     if await check_maintenance(message):
         return
-    active_users.add(message.from_user.id)
     menu_text = (
         "Привіт! Це бот для гри 'Шпигун'.\n\n"
         "Команди:\n"
@@ -387,20 +391,23 @@ async def handle_room_message(message: types.Message):
     else:
         await message.reply("Ви не перебуваєте в жодній кімнаті. Створіть (/create) або приєднайтесь (/join).")
 
-# Запуск бота з захистом
+# Запуск бота з посиленим захистом
 async def on_startup(_):
     try:
-        await bot.delete_webhook()
+        await bot.delete_webhook(drop_pending_updates=True)
         await bot.get_updates(offset=-1)
-        await asyncio.sleep(5)  # Збільшена затримка
+        await asyncio.sleep(10)  # Збільшена затримка
         logging.info("Polling started successfully")
     except Exception as e:
         logging.error(f"Startup error: {e}")
 
 async def on_shutdown(_):
-    await bot.delete_webhook()
-    await bot.close()
-    logging.info("Bot shutdown")
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        await bot.close()
+        logging.info("Bot shutdown successfully")
+    except Exception as e:
+        logging.error(f"Shutdown error: {e}")
 
 if __name__ == '__main__':
     executor.start_polling(dp, skip_updates=True, on_startup=on_startup, on_shutdown=on_shutdown)
