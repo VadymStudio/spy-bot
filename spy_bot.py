@@ -10,11 +10,11 @@ from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import uuid
 
+# Налаштування логування
+logging.basicConfig(level=logging.INFO)
+
 # Завантажуємо змінні з .env
 load_dotenv()
-
-# Налаштування логування для дебагу
-logging.basicConfig(level=logging.INFO)
 
 # Ініціалізація бота
 API_TOKEN = os.getenv('API_TOKEN', 'ВАШ_ТОКЕН_ВІД_BOTFATHER')
@@ -23,17 +23,13 @@ bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
 
-# Глобальний стан техобслуговування та активні користувачі
+# Глобальні змінні
 maintenance_mode = False
 active_users = set()
-
-# Масив локацій для гри
 LOCATIONS = [
     "Аеропорт", "Банк", "Пляж", "Казино", "Цирк", "Школа", "Лікарня",
     "Готель", "Музей", "Ресторан", "Театр", "Парк", "Космічна станція"
 ]
-
-# Словник для зберігання кімнат
 rooms = {}
 
 # Стани для FSM
@@ -41,36 +37,40 @@ class RoomStates(StatesGroup):
     waiting_for_token = State()
     waiting_for_spy_guess = State()
 
-# Перевірка, чи бот на техобслуговуванні
+# Перевірка техобслуговування
 async def check_maintenance(message: types.Message):
     if maintenance_mode and message.from_user.id != ADMIN_ID:
         await message.reply("Бот на технічному обслуговуванні. Зачекайте, будь ласка.")
         return True
     return False
 
-# Функція завершення гри
-async def end_game(token, message):
-    room = rooms.get(token)
-    if not room:
+# Команди техобслуговування (з найвищим пріоритетом)
+@dp.message_handler(commands=['maintenance_on'])
+async def maintenance_on(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.reply("Ви не адміністратор!")
         return
-    spy_username = next(username for pid, username in room['participants'] if pid == room['spy'])
-    result = (
-        f"Гра завершена! Шпигун: {spy_username}\n"
-        f"Локація: {room['location']}\n"
-        f"Код кімнати: {token}\n"
-        "Опції:\n"
-        "/leave - Покинути кімнату\n"
-        f"{ '/startgame - Почати нову гру' if message.from_user.id == room['owner'] else '' }"
-    )
-    for pid, _ in room['participants']:
-        await bot.send_message(pid, result)
-    # Очищення стану гри
-    room['game_started'] = False
-    room['spy'] = None
-    room['location'] = None
-    room['votes'] = {}
-    room['messages'] = []
-    room['waiting_for_spy_guess'] = False
+    global maintenance_mode, rooms
+    maintenance_mode = True
+    active_users.add(message.from_user.id)
+    for user_id in active_users:
+        await bot.send_message(user_id, "Увага! Бот переходить на технічне обслуговування. Усі ігри завершено.")
+    rooms.clear()
+    active_users.clear()
+    active_users.add(message.from_user.id)  # Зберігаємо адміна
+    await message.reply("Технічне обслуговування увімкнено.")
+
+@dp.message_handler(commands=['maintenance_off'])
+async def maintenance_off(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.reply("Ви не адміністратор!")
+        return
+    global maintenance_mode
+    maintenance_mode = False
+    active_users.add(message.from_user.id)
+    await message.reply("Технічне обслуговування вимкнено. Бот знову доступний для гри.")
+    for user_id in active_users:
+        await bot.send_message(user_id, "Технічне обслуговування завершено! Бот знову доступний для гри.")
 
 # Команда /start
 @dp.message_handler(commands=['start'])
@@ -87,7 +87,6 @@ async def send_welcome(message: types.Message):
         "/leave - Покинути кімнату"
     )
     await message.reply(menu_text)
-    # Додаткове повідомлення для адміна
     if message.from_user.id == ADMIN_ID:
         await message.reply(
             "Команди адміністратора:\n"
@@ -135,7 +134,7 @@ async def join_room(message: types.Message):
     await RoomStates.waiting_for_token.set()
     await message.reply("Введіть токен кімнати:")
 
-# Обробка введеного токена
+# Обробка токена
 @dp.message_handler(state=RoomStates.waiting_for_token)
 async def process_token(message: types.Message, state: FSMContext):
     if await check_maintenance(message):
@@ -151,7 +150,6 @@ async def process_token(message: types.Message, state: FSMContext):
             await message.reply("Гра в цій кімнаті вже почалася, ви не можете приєднатися.")
         elif user_id not in [p[0] for p in rooms[token]['participants']]:
             rooms[token]['participants'].append((user_id, username))
-            # Сповіщення про приєднання
             for pid, _ in rooms[token]['participants']:
                 if pid != user_id:
                     await bot.send_message(
@@ -179,7 +177,6 @@ async def leave_room(message: types.Message):
         if user_id in [p[0] for p in room['participants']]:
             room['participants'] = [p for p in room['participants'] if p[0] != user_id]
             await message.reply(f"Ви покинули кімнату `{token}`.")
-            # Сповіщення про вихід
             for pid, _ in room['participants']:
                 await bot.send_message(
                     pid,
@@ -226,12 +223,12 @@ async def start_game(message: types.Message):
             return
     await message.reply("Ви не перебуваєте в жодній кімнаті.")
 
-# Таймер гри (5 хвилин)
+# Таймер гри
 async def run_timer(token):
     room = rooms.get(token)
     if not room:
         return
-    await asyncio.sleep(290)  # Чекаємо 4:50
+    await asyncio.sleep(290)
     for i in range(10, -1, -1):
         if token not in rooms:
             return
@@ -243,7 +240,7 @@ async def run_timer(token):
         await bot.send_message(pid, "Час вийшов! Голосуйте, хто шпигун.")
     await show_voting_buttons(token)
 
-# Голосування (30 секунд)
+# Голосування
 async def show_voting_buttons(token):
     room = rooms.get(token)
     if not room:
@@ -281,7 +278,7 @@ async def process_vote(callback_query: types.CallbackQuery):
     room['votes'][user_id] = voted_pid
     await callback_query.answer("Ваш голос враховано!")
 
-# Підрахунок результатів голосування
+# Підрахунок голосів
 async def process_voting_results(token):
     room = rooms.get(token)
     if not room:
@@ -289,7 +286,7 @@ async def process_voting_results(token):
     if not room['votes']:
         for pid, _ in room['participants']:
             await bot.send_message(pid, "Ніхто не проголосував. Шпигун переміг!")
-        await end_game(token, message=None)  # Викликаємо end_game без message
+        await end_game(token)
         return
     vote_counts = {}
     for voted_id in room['votes'].values():
@@ -309,11 +306,37 @@ async def process_voting_results(token):
                 await bot.send_message(room['spy'], f"Час для вгадування: {i} секунд")
                 await asyncio.sleep(1)
             if room.get('waiting_for_spy_guess'):
-                await end_game(token, message=None)
+                await end_game(token)
     else:
-        await end_game(token, message=None)
+        await end_game(token)
 
-# Обробка вгадування локації шпигуном
+# Завершення гри
+async def end_game(token):
+    room = rooms.get(token)
+    if not room:
+        return
+    spy_username = next(username for pid, username in room['participants'] if pid == room['spy'])
+    result = (
+        f"Гра завершена! Шпигун: {spy_username}\n"
+        f"Локація: {room['location']}\n"
+        f"Код кімнати: {token}\n"
+        "Опції:\n"
+        "/leave - Покинути кімнату\n"
+    )
+    owner_id = room['owner']
+    for pid, _ in room['participants']:
+        if pid == owner_id:
+            await bot.send_message(pid, result + "/startgame - Почати нову гру")
+        else:
+            await bot.send_message(pid, result)
+    room['game_started'] = False
+    room['spy'] = None
+    room['location'] = None
+    room['votes'] = {}
+    room['messages'] = []
+    room['waiting_for_spy_guess'] = False
+
+# Вгадування шпигуна
 @dp.message_handler(lambda message: any(room.get('waiting_for_spy_guess') and message.from_user.id == room['spy'] for room in rooms.values()))
 async def handle_spy_guess(message: types.Message):
     if await check_maintenance(message):
@@ -339,7 +362,7 @@ async def handle_spy_guess(message: types.Message):
                 )
             for pid, _ in room['participants']:
                 await bot.send_message(pid, result)
-            await end_game(token, message)
+            await end_game(token)
             break
 
 # Чат у кімнаті
@@ -364,40 +387,15 @@ async def handle_room_message(message: types.Message):
     else:
         await message.reply("Ви не перебуваєте в жодній кімнаті. Створіть (/create) або приєднайтесь (/join).")
 
-# Команда для увімкнення техобслуговування
-@dp.message_handler(commands=['maintenance_on'])
-async def maintenance_on(message: types.Message):
-    global maintenance_mode, rooms
-    if message.from_user.id != ADMIN_ID:
-        await message.reply("Ви не адміністратор!")
-        return
-    maintenance_mode = True
-    for user_id in active_users:
-        await bot.send_message(user_id, "Увага! Бот переходить на технічне обслуговування. Усі ігри завершено.")
-    rooms.clear()
-    active_users.clear()
-    await message.reply("Технічне обслуговування увімкнено.")
-
-# Команда для вимкнення техобслуговування
-@dp.message_handler(commands=['maintenance_off'])
-async def maintenance_off(message: types.Message):
-    global maintenance_mode
-    if message.from_user.id != ADMIN_ID:
-        await message.reply("Ви не адміністратор!")
-        return
-    maintenance_mode = False
-    for user_id in active_users:
-        await bot.send_message(user_id, "Технічне обслуговування завершено! Бот знову доступний для гри.")
-    await message.reply("Технічне обслуговування вимкнено.")
-
-# Запуск бота
-import asyncio
-
+# Запуск бота з захистом від конфліктів
 async def on_startup(_):
-    # Очищення попередніх оновлень
-    await bot.delete_webhook()
-    await asyncio.sleep(2)  # Затримка для завершення попередніх сесій
-    logging.info("Starting polling...")
+    try:
+        await bot.delete_webhook()
+        await bot.get_updates(offset=-1)
+        await asyncio.sleep(3)
+        logging.info("Polling started successfully")
+    except Exception as e:
+        logging.error(f"Startup error: {e}")
 
 if __name__ == '__main__':
-    executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
+    executor.start_polling(dp, skip_updates=True, on_startup=on_startup, on_shutdown=lambda _: bot.close())
