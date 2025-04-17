@@ -44,7 +44,7 @@ async def check_maintenance(message: types.Message):
         return True
     return False
 
-# Команди техобслуговування (з найвищим пріоритетом)
+# Команди техобслуговування
 @dp.message_handler(commands=['maintenance_on'])
 async def maintenance_on(message: types.Message):
     if message.from_user.id != ADMIN_ID:
@@ -57,7 +57,7 @@ async def maintenance_on(message: types.Message):
         await bot.send_message(user_id, "Увага! Бот переходить на технічне обслуговування. Усі ігри завершено.")
     rooms.clear()
     active_users.clear()
-    active_users.add(message.from_user.id)  # Зберігаємо адміна
+    active_users.add(message.from_user.id)
     await message.reply("Технічне обслуговування увімкнено.")
 
 @dp.message_handler(commands=['maintenance_off'])
@@ -387,15 +387,20 @@ async def handle_room_message(message: types.Message):
     else:
         await message.reply("Ви не перебуваєте в жодній кімнаті. Створіть (/create) або приєднайтесь (/join).")
 
-# Запуск бота з захистом від конфліктів
+# Запуск бота з захистом
 async def on_startup(_):
     try:
         await bot.delete_webhook()
         await bot.get_updates(offset=-1)
-        await asyncio.sleep(3)
+        await asyncio.sleep(5)  # Збільшена затримка
         logging.info("Polling started successfully")
     except Exception as e:
         logging.error(f"Startup error: {e}")
 
+async def on_shutdown(_):
+    await bot.delete_webhook()
+    await bot.close()
+    logging.info("Bot shutdown")
+
 if __name__ == '__main__':
-    executor.start_polling(dp, skip_updates=True, on_startup=on_startup, on_shutdown=lambda _: bot.close())
+    executor.start_polling(dp, skip_updates=True, on_startup=on_startup, on_shutdown=on_shutdown)
