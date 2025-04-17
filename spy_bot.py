@@ -391,5 +391,13 @@ async def maintenance_off(message: types.Message):
     await message.reply("Технічне обслуговування вимкнено.")
 
 # Запуск бота
+import asyncio
+
+async def on_startup(_):
+    # Очищення попередніх оновлень
+    await bot.delete_webhook()
+    await asyncio.sleep(2)  # Затримка для завершення попередніх сесій
+    logging.info("Starting polling...")
+
 if __name__ == '__main__':
-    executor.start_polling(dp, skip_updates=True)
+    executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
