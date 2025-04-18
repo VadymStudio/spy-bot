@@ -1,3 +1,4 @@
+from aiogram.filters import StateFilter
 import logging
 import asyncio
 import random
@@ -158,7 +159,7 @@ async def join_room(message: types.Message):
     dp.storage.set_state(user_id, RoomStates.waiting_for_token)
 
 # Обробка токена
-@dp.message(state=RoomStates.waiting_for_token)
+@dp.message(StateFilter(state=RoomStates.waiting_for_token))
 async def process_token(message: types.Message):
     if await check_maintenance(message):
         dp.storage.set_state(message.from_user.id, None)
