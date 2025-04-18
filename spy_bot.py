@@ -1,4 +1,3 @@
-from aiogram.filters import StateFilter
 import logging
 import asyncio
 import random
@@ -6,7 +5,7 @@ import os
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand, BotCommandScopeChat
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
@@ -156,13 +155,13 @@ async def join_room(message: types.Message):
             await message.reply("Ви вже в кімнаті! Спочатку покиньте її (/leave).")
             return
     await message.answer("Введіть токен кімнати:")
-    dp.storage.set_state(user_id, RoomStates.waiting_for_token)
+    await dp.storage.set_state(user=user_id, state=RoomStates.waiting_for_token)
 
 # Обробка токена
 @dp.message(StateFilter(state=RoomStates.waiting_for_token))
 async def process_token(message: types.Message):
     if await check_maintenance(message):
-        dp.storage.set_state(message.from_user.id, None)
+        await dp.storage.set_state(user=message.from_user.id, state=None)
         return
     active_users.add(message.from_user.id)
     token = message.text.strip()
@@ -188,7 +187,7 @@ async def process_token(message: types.Message):
             await message.reply("Ви вже в цій кімнаті!")
     else:
         await message.reply("Кімнати з таким токеном не існує. Спробуйте ще раз.")
-    dp.storage.set_state(user_id, None)
+    await dp.storage.set_state(user=user_id, state=None)
 
 # Команда /leave
 @dp.message(Command("leave"))
@@ -485,7 +484,7 @@ async def handle_spy_guess(message: types.Message):
             break
 
 # Чат у кімнаті
-@dp.message(content_types=['text'])
+@dp.message()
 async def handle_room_message(message: types.Message):
     if await check_maintenance(message):
         return
@@ -517,7 +516,7 @@ async def on_startup(_):
 
 async def on_shutdown(_):
     await bot.delete_webhook(drop_pending_updates=True)
-    await bot.close()
+    await bot.session.close()
     logger.info("Bot shutdown successfully")
 
 # Налаштування сервера
