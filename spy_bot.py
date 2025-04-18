@@ -22,7 +22,7 @@ load_dotenv()
 API_TOKEN = os.getenv('BOT_TOKEN')
 if not API_TOKEN:
     raise ValueError("BOT_TOKEN is not set in environment variables")
-ADMIN_ID = int(os.getenv('ADMIN_ID', '123456789'))  # Заміни на свій Telegram ID
+ADMIN_ID = int(os.getenv('ADMIN_ID', '5280737551'))  # Заміни на свій Telegram ID
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
