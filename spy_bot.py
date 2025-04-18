@@ -158,7 +158,7 @@ async def join_room(message: types.Message):
     await dp.storage.set_state(user=user_id, state=RoomStates.waiting_for_token)
 
 # Обробка токена
-@dp.message(StateFilter(state=RoomStates.waiting_for_token))
+@dp.message(StateFilter(RoomStates.waiting_for_token))
 async def process_token(message: types.Message):
     if await check_maintenance(message):
         await dp.storage.set_state(user=message.from_user.id, state=None)
