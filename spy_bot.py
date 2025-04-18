@@ -19,7 +19,9 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 # Ініціалізація бота
-API_TOKEN = os.getenv('BOT_TOKEN', 'ВАШ_ТОКЕН_ВІД_BOTFATHER')
+API_TOKEN = os.getenv('BOT_TOKEN')
+if not API_TOKEN:
+    raise ValueError("BOT_TOKEN is not set in environment variables")
 ADMIN_ID = int(os.getenv('ADMIN_ID', '123456789'))  # Заміни на свій Telegram ID
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
@@ -505,7 +507,10 @@ async def handle_room_message(message: types.Message):
 
 # Налаштування webhook
 async def on_startup(_):
-    webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/webhook"
+    webhook_host = os.getenv('RENDER_EXTERNAL_HOSTNAME')
+    if not webhook_host:
+        raise ValueError("RENDER_EXTERNAL_HOSTNAME is not set in environment variables")
+    webhook_url = f"https://{webhook_host}/webhook"
     await bot.set_webhook(webhook_url, drop_pending_updates=True)
     logger.info(f"Webhook set to {webhook_url}")
 
