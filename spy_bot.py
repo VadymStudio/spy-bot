@@ -4,9 +4,7 @@ import random
 import os
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
-from aiogram.dispatcher import FSMContext
-from aiogram.dispatcher.filters.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand, BotCommandScopeChat
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
@@ -37,8 +35,8 @@ LOCATIONS = [
 rooms = {}
 
 # Стани для FSM
-class RoomStates(StatesGroup):
-    waiting_for_token = State()
+class RoomStates:
+    waiting_for_token = "waiting_for_token"
 
 # Перевірка техобслуговування
 async def check_maintenance(message: types.Message):
@@ -154,14 +152,14 @@ async def join_room(message: types.Message):
         if user_id in [p[0] for p in room['participants']]:
             await message.reply("Ви вже в кімнаті! Спочатку покиньте її (/leave).")
             return
-    await RoomStates.waiting_for_token.set()
-    await message.reply("Введіть токен кімнати:")
+    await message.answer("Введіть токен кімнати:")
+    dp.storage.set_state(user_id, RoomStates.waiting_for_token)
 
 # Обробка токена
 @dp.message(state=RoomStates.waiting_for_token)
-async def process_token(message: types.Message, state: FSMContext):
+async def process_token(message: types.Message):
     if await check_maintenance(message):
-        await state.finish()
+        dp.storage.set_state(message.from_user.id, None)
         return
     active_users.add(message.from_user.id)
     token = message.text.strip()
@@ -187,7 +185,7 @@ async def process_token(message: types.Message, state: FSMContext):
             await message.reply("Ви вже в цій кімнаті!")
     else:
         await message.reply("Кімнати з таким токеном не існує. Спробуйте ще раз.")
-    await state.finish()
+    dp.storage.set_state(user_id, None)
 
 # Команда /leave
 @dp.message(Command("leave"))
