@@ -3,29 +3,33 @@ import asyncio
 import random
 import os
 from dotenv import load_dotenv
-from aiogram import Bot, Dispatcher, executor, types
+from aiogram import Bot, Dispatcher, types
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.filters import Command
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand, BotCommandScopeChat
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiohttp import web
 import uuid
 
 # Налаштування логування
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Завантажуємо змінні з .env
 load_dotenv()
 
 # Ініціалізація бота
-API_TOKEN = os.getenv('API_TOKEN', 'ВАШ_ТОКЕН_ВІД_BOTFATHER')
-ADMIN_ID = int(os.getenv('ADMIN_ID', '123456789'))
+API_TOKEN = os.getenv('BOT_TOKEN', 'ВАШ_ТОКЕН_ВІД_BOTFATHER')
+ADMIN_ID = int(os.getenv('ADMIN_ID', '123456789'))  # Заміни на свій Telegram ID
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
 
 # Глобальні змінні
 maintenance_mode = False
-active_users = set()  # Зберігає всіх, хто натискав /start
+active_users = set()
 LOCATIONS = [
     "Аеропорт", "Банк", "Пляж", "Казино", "Цирк", "Школа", "Лікарня",
     "Готель", "Музей", "Ресторан", "Театр", "Парк", "Космічна станція"
@@ -35,7 +39,6 @@ rooms = {}
 # Стани для FSM
 class RoomStates(StatesGroup):
     waiting_for_token = State()
-    waiting_for_spy_guess = State()
 
 # Перевірка техобслуговування
 async def check_maintenance(message: types.Message):
@@ -45,7 +48,7 @@ async def check_maintenance(message: types.Message):
     return False
 
 # Команди техобслуговування
-@dp.message_handler(commands=['maintenance_on'])
+@dp.message(Command("maintenance_on"))
 async def maintenance_on(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         await message.reply("Ви не адміністратор!")
@@ -53,15 +56,15 @@ async def maintenance_on(message: types.Message):
     global maintenance_mode, rooms
     maintenance_mode = True
     active_users.add(message.from_user.id)
-    rooms.clear()  # Очищаємо кімнати, але зберігаємо active_users
+    rooms.clear()
     for user_id in active_users:
         try:
             await bot.send_message(user_id, "Увага! Бот переходить на технічне обслуговування. Усі ігри завершено.")
         except Exception as e:
-            logging.error(f"Failed to send maintenance_on message to {user_id}: {e}")
+            logger.error(f"Failed to send maintenance_on message to {user_id}: {e}")
     await message.reply("Технічне обслуговування увімкнено.")
 
-@dp.message_handler(commands=['maintenance_off'])
+@dp.message(Command("maintenance_off"))
 async def maintenance_off(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         await message.reply("Ви не адміністратор!")
@@ -73,13 +76,22 @@ async def maintenance_off(message: types.Message):
         try:
             await bot.send_message(user_id, "Технічне обслуговування завершено! Бот знову доступний для гри.")
         except Exception as e:
-            logging.error(f"Failed to send maintenance_off message to {user_id}: {e}")
+            logger.error(f"Failed to send maintenance_off message to {user_id}: {e}")
     await message.reply("Технічне обслуговування вимкнено.")
 
+# Команда /check_webhook
+@dp.message(Command("check_webhook"))
+async def check_webhook(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.reply("Ця команда доступна лише адміністратору!")
+        return
+    info = await bot.get_webhook_info()
+    await message.reply(f"Webhook info: {info}")
+
 # Команда /start
-@dp.message_handler(commands=['start'])
+@dp.message(Command("start"))
 async def send_welcome(message: types.Message):
-    active_users.add(message.from_user.id)  # Додаємо користувача до active_users
+    active_users.add(message.from_user.id)
     if await check_maintenance(message):
         return
     menu_text = (
@@ -88,18 +100,20 @@ async def send_welcome(message: types.Message):
         "/create - Створити нову кімнату\n"
         "/join - Приєднатися до кімнати за токеном\n"
         "/startgame - Запустити гру (тільки власник)\n"
-        "/leave - Покинути кімнату"
+        "/leave - Покинути кімнату\n"
+        "/early_vote - Дострокове завершення гри (під час гри)"
     )
     await message.reply(menu_text)
     if message.from_user.id == ADMIN_ID:
         await message.reply(
             "Команди адміністратора:\n"
             "/maintenance_on - Увімкнути технічне обслуговування\n"
-            "/maintenance_off - Вимкнути технічне обслуговування"
+            "/maintenance_off - Вимкнути технічне обслуговування\n"
+            "/check_webhook - Перевірити стан webhook"
         )
 
 # Команда /create
-@dp.message_handler(commands=['create'])
+@dp.message(Command("create"))
 async def create_room(message: types.Message):
     if await check_maintenance(message):
         return
@@ -116,7 +130,12 @@ async def create_room(message: types.Message):
         'location': None,
         'messages': [],
         'votes': {},
-        'waiting_for_spy_guess': False
+        'waiting_for_spy_guess': False,
+        'banned_from_voting': set(),
+        'vote_in_progress': False,
+        'votes_for': 0,
+        'votes_against': 0,
+        'voters': set()
     }
 
     await message.reply(
@@ -125,7 +144,7 @@ async def create_room(message: types.Message):
     )
 
 # Команда /join
-@dp.message_handler(commands=['join'])
+@dp.message(Command("join"))
 async def join_room(message: types.Message):
     if await check_maintenance(message):
         return
@@ -139,7 +158,7 @@ async def join_room(message: types.Message):
     await message.reply("Введіть токен кімнати:")
 
 # Обробка токена
-@dp.message_handler(state=RoomStates.waiting_for_token)
+@dp.message(state=RoomStates.waiting_for_token)
 async def process_token(message: types.Message, state: FSMContext):
     if await check_maintenance(message):
         await state.finish()
@@ -171,7 +190,7 @@ async def process_token(message: types.Message, state: FSMContext):
     await state.finish()
 
 # Команда /leave
-@dp.message_handler(commands=['leave'])
+@dp.message(Command("leave"))
 async def leave_room(message: types.Message):
     if await check_maintenance(message):
         return
@@ -196,7 +215,7 @@ async def leave_room(message: types.Message):
     await message.reply("Ви не перебуваєте в жодній кімнаті.")
 
 # Команда /startgame
-@dp.message_handler(commands=['startgame'])
+@dp.message(Command("startgame"))
 async def start_game(message: types.Message):
     if await check_maintenance(message):
         return
@@ -216,25 +235,117 @@ async def start_game(message: types.Message):
             room['game_started'] = True
             room['location'] = random.choice(LOCATIONS)
             room['spy'] = random.choice([p[0] for p in room['participants']])
+            room['banned_from_voting'] = set()
+
+            # Встановлюємо меню з /early_vote
+            commands = [BotCommand(command="early_vote", description="Дострокове завершення гри")]
+            await bot.set_my_commands(commands, scope=BotCommandScopeChat(chat_id=message.chat.id))
+
             for pid, username in room['participants']:
                 if pid == room['spy']:
                     await bot.send_message(pid, "Ви ШПИГУН! Спробуйте вгадати локацію, не видавши себе.")
                 else:
                     await bot.send_message(pid, f"Локація: {room['location']}\nОдин із гравців — шпигун!")
             for pid, _ in room['participants']:
-                await bot.send_message(pid, "Гра почалася! Обговорюйте і шукайте шпигуна. Час: 5 хвилин.")
+                await bot.send_message(pid, "Гра почалася! Обговорюйте і шукайте шпигуна. Час: 10 хвилин.")
             await run_timer(token)
             return
     await message.reply("Ви не перебуваєте в жодній кімнаті.")
+
+# Команда /early_vote
+@dp.message(Command("early_vote"))
+async def early_vote(message: types.Message):
+    if await check_maintenance(message):
+        return
+    active_users.add(message.from_user.id)
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    for token, room in rooms.items():
+        if user_id in [p[0] for p in room['participants']]:
+            if not room['game_started']:
+                await message.reply("Гра не активна!")
+                return
+            if user_id in room['banned_from_voting']:
+                await message.reply("Ви вже ініціювали голосування в цій партії!")
+                return
+            if room['vote_in_progress']:
+                await message.reply("Голосування вже триває!")
+                return
+
+            room['vote_in_progress'] = True
+            room['votes_for'] = 0
+            room['votes_against'] = 0
+            room['voters'] = set()
+
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton("За", callback_data=f"early_vote_for_{token}"),
+                    InlineKeyboardButton("Проти", callback_data=f"early_vote_against_{token}"),
+                ]
+            ])
+
+            await message.reply("Голосування за дострокове завершення гри! Час: 15 секунд.", reply_markup=keyboard)
+
+            for i in range(15, 0, -1):
+                if token not in rooms or not room['vote_in_progress']:
+                    return
+                if i == 5:
+                    for pid, _ in room['participants']:
+                        await bot.send_message(pid, "5 секунд до кінця голосування!")
+                await asyncio.sleep(1)
+
+            room['vote_in_progress'] = False
+            votes_for = room['votes_for']
+            votes_against = room['votes_against']
+
+            if votes_for > votes_against:
+                room['game_started'] = False
+                await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=chat_id))
+                for pid, _ in room['participants']:
+                    await bot.send_message(pid, f"Голосування успішне! Гра завершена. За: {votes_for}, Проти: {votes_against}")
+                await end_game(token)
+            else:
+                room['banned_from_voting'].add(user_id)
+                for pid, _ in room['participants']:
+                    await bot.send_message(pid, f"Голосування провалено. За: {votes_for}, Проти: {votes_against}")
+            return
+    await message.reply("Ви не перебуваєте в жодній кімнаті.")
+
+# Обробник дострокового голосування
+@dp.callback_query(lambda c: c.data.startswith("early_vote_"))
+async def early_vote_callback(callback: types.CallbackQuery):
+    if maintenance_mode and callback.from_user.id != ADMIN_ID:
+        await callback.answer("Бот на технічному обслуговуванні!")
+        return
+    user_id = callback.from_user.id
+    token = callback.data.split('_')[-1]
+    room = rooms.get(token)
+    if not room or user_id not in [p[0] for p in room['participants']]:
+        await callback.answer("Ви не в цій грі!")
+        return
+    if not room['vote_in_progress']:
+        await callback.answer("Голосування закінчено!")
+        return
+    if user_id in room['voters']:
+        await callback.answer("Ви вже проголосували!")
+        return
+
+    room['voters'].add(user_id)
+    if callback.data.startswith("early_vote_for"):
+        room['votes_for'] += 1
+        await callback.answer("Ви проголосували 'За'!")
+    else:
+        room['votes_against'] += 1
+        await callback.answer("Ви проголосували 'Проти'!")
 
 # Таймер гри
 async def run_timer(token):
     room = rooms.get(token)
     if not room:
         return
-    await asyncio.sleep(290)
+    await asyncio.sleep(590)  # 10 хвилин мінус 10 секунд для відліку
     for i in range(10, -1, -1):
-        if token not in rooms:
+        if token not in rooms or not room['game_started']:
             return
         for pid, _ in room['participants']:
             await bot.send_message(pid, f"До кінця гри: {i} секунд")
@@ -264,7 +375,7 @@ async def show_voting_buttons(token):
     await process_voting_results(token)
 
 # Обробка голосів
-@dp.callback_query_handler(lambda c: c.data.startswith('vote_'))
+@dp.callback_query(lambda c: c.data.startswith('vote_'))
 async def process_vote(callback_query: types.CallbackQuery):
     if maintenance_mode and callback_query.from_user.id != ADMIN_ID:
         await callback_query.answer("Бот на технічному обслуговуванні!")
@@ -333,15 +444,18 @@ async def end_game(token):
             await bot.send_message(pid, result + "/startgame - Почати нову гру")
         else:
             await bot.send_message(pid, result)
+    await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=room['participants'][0][0]))
     room['game_started'] = False
     room['spy'] = None
     room['location'] = None
     room['votes'] = {}
     room['messages'] = []
     room['waiting_for_spy_guess'] = False
+    room['vote_in_progress'] = False
+    room['banned_from_voting'] = set()
 
 # Вгадування шпигуна
-@dp.message_handler(lambda message: any(room.get('waiting_for_spy_guess') and message.from_user.id == room['spy'] for room in rooms.values()))
+@dp.message(lambda message: any(room.get('waiting_for_spy_guess') and message.from_user.id == room['spy'] for room in rooms.values()))
 async def handle_spy_guess(message: types.Message):
     if await check_maintenance(message):
         return
@@ -370,7 +484,7 @@ async def handle_spy_guess(message: types.Message):
             break
 
 # Чат у кімнаті
-@dp.message_handler(content_types=['text'])
+@dp.message(content_types=['text'])
 async def handle_room_message(message: types.Message):
     if await check_maintenance(message):
         return
@@ -391,23 +505,25 @@ async def handle_room_message(message: types.Message):
     else:
         await message.reply("Ви не перебуваєте в жодній кімнаті. Створіть (/create) або приєднайтесь (/join).")
 
-# Запуск бота з посиленим захистом
+# Налаштування webhook
 async def on_startup(_):
-    try:
-        await bot.delete_webhook(drop_pending_updates=True)
-        await bot.get_updates(offset=-1)
-        await asyncio.sleep(10)  # Збільшена затримка
-        logging.info("Polling started successfully")
-    except Exception as e:
-        logging.error(f"Startup error: {e}")
+    webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/webhook"
+    await bot.set_webhook(webhook_url, drop_pending_updates=True)
+    logger.info(f"Webhook set to {webhook_url}")
 
 async def on_shutdown(_):
-    try:
-        await bot.delete_webhook(drop_pending_updates=True)
-        await bot.close()
-        logging.info("Bot shutdown successfully")
-    except Exception as e:
-        logging.error(f"Shutdown error: {e}")
+    await bot.delete_webhook(drop_pending_updates=True)
+    await bot.close()
+    logger.info("Bot shutdown successfully")
 
-if __name__ == '__main__':
-    executor.start_polling(dp, skip_updates=True, on_startup=on_startup, on_shutdown=on_shutdown)
+# Налаштування сервера
+app = web.Application()
+webhook_path = "/webhook"
+SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=webhook_path)
+setup_application(app, dp, bot=bot)
+
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 8443))
+    app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
+    web.run_app(app, host="0.0.0.0", port=port)
