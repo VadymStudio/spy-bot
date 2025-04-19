@@ -11,8 +11,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command, StateFilter
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand, BotCommandScopeChat
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-from aiohttp import web, ClientSession
+from aiohttp import web, ClientSession, ClientTimeout
 import uuid
+import aiohttp
 
 # Налаштування логування
 logging.basicConfig(level=logging.INFO)
@@ -26,7 +27,7 @@ API_TOKEN = os.getenv('BOT_TOKEN')
 if not API_TOKEN:
     raise ValueError("BOT_TOKEN is not set in environment variables")
 ADMIN_ID = int(os.getenv('ADMIN_ID', '5280737551'))  # Заміни на свій Telegram ID
-bot = Bot(token=API_TOKEN, session=ClientSession(timeout=30))  # Додаємо таймаут
+bot = Bot(token=API_TOKEN, session=ClientSession(timeout=ClientTimeout(total=30)))  # Виправлений таймаут
 storage = MemoryStorage()
 dp = Dispatcher(bot=bot, storage=storage)
 
@@ -40,6 +41,9 @@ LOCATIONS = [
 rooms = {}
 last_save_time = 0
 SAVE_INTERVAL = 5  # Зберігати rooms.json не частіше, ніж раз на 5 секунд
+
+# Логування версії aiohttp
+logger.info(f"Using aiohttp version: {aiohttp.__version__}")
 
 # Функція для збереження rooms у файл
 def save_rooms():
