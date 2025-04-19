@@ -2,6 +2,7 @@ import logging
 import asyncio
 import random
 import os
+import json
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -36,6 +37,34 @@ LOCATIONS = [
 ]
 rooms = {}
 
+# Функція для збереження rooms у файл
+def save_rooms():
+    try:
+        with open('rooms.json', 'w') as f:
+            json.dump(rooms, f, default=str)
+        logger.info("Rooms saved to rooms.json")
+    except Exception as e:
+        logger.error(f"Failed to save rooms: {e}")
+
+# Функція для завантаження rooms із файлу
+def load_rooms():
+    global rooms
+    try:
+        if os.path.exists('rooms.json'):
+            with open('rooms.json', 'r') as f:
+                loaded_rooms = json.load(f)
+                rooms = {k: v for k, v in loaded_rooms.items()}
+                # Конвертуємо owner і participants назад у int
+                for room in rooms.values():
+                    room['owner'] = int(room['owner'])
+                    room['participants'] = [(int(pid), username) for pid, username in room['participants']]
+                    room['banned_from_voting'] = set(room['banned_from_voting'])
+                    room['voters'] = set(room['voters'])
+                    room['votes'] = {int(k): int(v) for k, v in room['votes'].items()}
+            logger.info("Rooms loaded from rooms.json")
+    except Exception as e:
+        logger.error(f"Failed to load rooms: {e}")
+
 # Стани для FSM
 class RoomStates:
     waiting_for_token = "waiting_for_token"
@@ -57,6 +86,7 @@ async def maintenance_on(message: types.Message):
     maintenance_mode = True
     active_users.add(message.from_user.id)
     rooms.clear()
+    save_rooms()  # Зберігаємо порожній rooms
     for user_id in active_users:
         try:
             await bot.send_message(user_id, "Увага! Бот переходить на технічне обслуговування. Усі ігри завершено.")
@@ -118,7 +148,7 @@ async def create_room(message: types.Message):
     if await check_maintenance(message):
         return
     active_users.add(message.from_user.id)
-    room_token = str(uuid.uuid4())[:8]
+    room_token = str(uuid.uuid4())[:8].lower()  # Токен у нижньому регістрі
     user_id = message.from_user.id
     username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
 
@@ -137,6 +167,8 @@ async def create_room(message: types.Message):
         'votes_against': 0,
         'voters': set()
     }
+    save_rooms()  # Зберігаємо rooms після створення
+    logger.info(f"Room created: {room_token}, rooms: {list(rooms.keys())}")
 
     await message.reply(
         f"Кімнату створено! Токен: `{room_token}`\n"
@@ -164,15 +196,17 @@ async def process_token(message: types.Message):
         await dp.storage.set_state(user=message.from_user.id, state=None)
         return
     active_users.add(message.from_user.id)
-    token = message.text.strip()
+    token = message.text.strip().lower()  # Ігноруємо регістр
     user_id = message.from_user.id
     username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
 
+    logger.info(f"Attempting to join room with token: {token}, available rooms: {list(rooms.keys())}")
     if token in rooms:
         if rooms[token]['game_started']:
             await message.reply("Гра в цій кімнаті вже почалася, ви не можете приєднатися.")
         elif user_id not in [p[0] for p in rooms[token]['participants']]:
             rooms[token]['participants'].append((user_id, username))
+            save_rooms()  # Зберігаємо rooms після приєднання
             for pid, _ in rooms[token]['participants']:
                 if pid != user_id:
                     await bot.send_message(
@@ -186,7 +220,7 @@ async def process_token(message: types.Message):
         else:
             await message.reply("Ви вже в цій кімнаті!")
     else:
-        await message.reply("Кімнати з таким токеном не існує. Спробуйте ще раз.")
+        await message.reply(f"Кімнати з токеном `{token}` не існує. Спробуйте ще раз.")
     await dp.storage.set_state(user=user_id, state=None)
 
 # Команда /leave
@@ -211,6 +245,7 @@ async def leave_room(message: types.Message):
                 del rooms[token]
                 for pid, _ in room['participants']:
                     await bot.send_message(pid, f"Кімната `{token}` закрита, бо власник покинув її.")
+            save_rooms()  # Зберігаємо rooms після виходу
             return
     await message.reply("Ви не перебуваєте в жодній кімнаті.")
 
@@ -236,6 +271,7 @@ async def start_game(message: types.Message):
             room['location'] = random.choice(LOCATIONS)
             room['spy'] = random.choice([p[0] for p in room['participants']])
             room['banned_from_voting'] = set()
+            save_rooms()  # Зберігаємо rooms після старту гри
 
             # Встановлюємо меню з /early_vote
             commands = [BotCommand(command="early_vote", description="Дострокове завершення гри")]
@@ -276,6 +312,7 @@ async def early_vote(message: types.Message):
             room['votes_for'] = 0
             room['votes_against'] = 0
             room['voters'] = set()
+            save_rooms()  # Зберігаємо rooms перед голосуванням
 
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [
@@ -297,6 +334,7 @@ async def early_vote(message: types.Message):
             room['vote_in_progress'] = False
             votes_for = room['votes_for']
             votes_against = room['votes_against']
+            save_rooms()  # Зберігаємо rooms після голосування
 
             if votes_for > votes_against:
                 room['game_started'] = False
@@ -308,6 +346,7 @@ async def early_vote(message: types.Message):
                 room['banned_from_voting'].add(user_id)
                 for pid, _ in room['participants']:
                     await bot.send_message(pid, f"Голосування провалено. За: {votes_for}, Проти: {votes_against}")
+            save_rooms()  # Зберігаємо rooms після результату
             return
     await message.reply("Ви не перебуваєте в жодній кімнаті.")
 
@@ -337,6 +376,7 @@ async def early_vote_callback(callback: types.CallbackQuery):
     else:
         room['votes_against'] += 1
         await callback.answer("Ви проголосували 'Проти'!")
+    save_rooms()  # Зберігаємо rooms після голосування
 
 # Таймер гри
 async def run_timer(token):
@@ -351,6 +391,7 @@ async def run_timer(token):
             await bot.send_message(pid, f"До кінця гри: {i} секунд")
         await asyncio.sleep(1)
     room['game_started'] = False
+    save_rooms()  # Зберігаємо rooms після таймера
     for pid, _ in room['participants']:
         await bot.send_message(pid, "Час вийшов! Голосуйте, хто шпигун.")
     await show_voting_buttons(token)
@@ -391,6 +432,7 @@ async def process_vote(callback_query: types.CallbackQuery):
         await callback_query.answer("Ви вже проголосували!")
         return
     room['votes'][user_id] = voted_pid
+    save_rooms()  # Зберігаємо rooms після голосування
     await callback_query.answer("Ваш голос враховано!")
 
 # Підрахунок голосів
@@ -453,6 +495,7 @@ async def end_game(token):
     room['waiting_for_spy_guess'] = False
     room['vote_in_progress'] = False
     room['banned_from_voting'] = set()
+    save_rooms()  # Зберігаємо rooms після завершення гри
 
 # Вгадування шпигуна
 @dp.message(lambda message: any(room.get('waiting_for_spy_guess') and message.from_user.id == room['spy'] for room in rooms.values()))
@@ -501,12 +544,14 @@ async def handle_room_message(message: types.Message):
             for pid, _ in room['participants']:
                 if pid != user_id:
                     await bot.send_message(pid, msg)
+            save_rooms()  # Зберігаємо rooms після повідомлення
             break
     else:
         await message.reply("Ви не перебуваєте в жодній кімнаті. Створіть (/create) або приєднайтесь (/join).")
 
 # Налаштування webhook
 async def on_startup(_):
+    load_rooms()  # Завантажуємо rooms при старті
     webhook_host = os.getenv('RENDER_EXTERNAL_HOSTNAME')
     if not webhook_host:
         raise ValueError("RENDER_EXTERNAL_HOSTNAME is not set in environment variables")
@@ -515,6 +560,7 @@ async def on_startup(_):
     logger.info(f"Webhook set to {webhook_url}")
 
 async def on_shutdown(_):
+    save_rooms()  # Зберігаємо rooms при зупинці
     await bot.delete_webhook(drop_pending_updates=True)
     await bot.session.close()
     logger.info("Bot shutdown successfully")
