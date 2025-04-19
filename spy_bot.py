@@ -11,7 +11,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command, StateFilter
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand, BotCommandScopeChat
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-from aiohttp import web
+from aiohttp import web, ClientSession
 import uuid
 
 # Налаштування логування
@@ -26,7 +26,7 @@ API_TOKEN = os.getenv('BOT_TOKEN')
 if not API_TOKEN:
     raise ValueError("BOT_TOKEN is not set in environment variables")
 ADMIN_ID = int(os.getenv('ADMIN_ID', '5280737551'))  # Заміни на свій Telegram ID
-bot = Bot(token=API_TOKEN)
+bot = Bot(token=API_TOKEN, session=ClientSession(timeout=30))  # Додаємо таймаут
 storage = MemoryStorage()
 dp = Dispatcher(bot=bot, storage=storage)
 
@@ -46,7 +46,7 @@ def save_rooms():
     global last_save_time
     current_time = time.time()
     if current_time - last_save_time < SAVE_INTERVAL:
-        return  # Уникаємо частих записів
+        return
     try:
         with open('rooms.json', 'w') as f:
             json.dump(rooms, f, default=str)
@@ -63,7 +63,6 @@ def load_rooms():
             with open('rooms.json', 'r') as f:
                 loaded_rooms = json.load(f)
                 rooms = {k: v for k, v in loaded_rooms.items()}
-                # Конвертуємо owner і participants назад у int
                 for room in rooms.values():
                     room['owner'] = int(room['owner'])
                     room['participants'] = [(int(pid), username) for pid, username in room['participants']]
@@ -129,8 +128,12 @@ async def check_webhook(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         await message.reply("Ця команда доступна лише адміністратору!")
         return
-    info = await bot.get_webhook_info()
-    await message.reply(f"Webhook info: {info}")
+    try:
+        info = await bot.get_webhook_info()
+        await message.reply(f"Webhook info: {info}")
+    except Exception as e:
+        logger.error(f"Failed to check webhook: {e}")
+        await message.reply(f"Error checking webhook: {e}")
 
 # Команда /start
 @dp.message(Command("start"))
@@ -565,29 +568,41 @@ async def handle_room_message(message: types.Message):
 
 # Налаштування webhook
 async def on_startup(_):
-    load_rooms()
-    webhook_host = os.getenv('RENDER_EXTERNAL_HOSTNAME')
-    if not webhook_host:
-        raise ValueError("RENDER_EXTERNAL_HOSTNAME is not set in environment variables")
-    webhook_url = f"https://{webhook_host}/webhook"
-    await bot.set_webhook(webhook_url, drop_pending_updates=True)
-    logger.info(f"Webhook set to {webhook_url}")
+    try:
+        load_rooms()
+        webhook_host = os.getenv('RENDER_EXTERNAL_HOSTNAME')
+        if not webhook_host:
+            raise ValueError("RENDER_EXTERNAL_HOSTNAME is not set in environment variables")
+        webhook_url = f"https://{webhook_host}/webhook"
+        await bot.set_webhook(webhook_url, drop_pending_updates=True)
+        logger.info(f"Webhook set to {webhook_url}")
+    except Exception as e:
+        logger.error(f"Startup failed: {e}")
+        raise
 
 async def on_shutdown(_):
-    save_rooms()
-    await bot.delete_webhook(drop_pending_updates=True)
-    await bot.session.close()
-    logger.info("Bot shutdown successfully")
+    try:
+        save_rooms()
+        await bot.delete_webhook(drop_pending_updates=True)
+        await bot.session.close()
+        logger.info("Bot shutdown successfully")
+    except Exception as e:
+        logger.error(f"Shutdown failed: {e}")
 
 # Налаштування сервера
 app = web.Application()
 webhook_path = "/webhook"
 SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=webhook_path)
-app.router.add_get("/health", health_check)  # Ендпоінт для UptimeRobot
+app.router.add_get("/health", health_check)
 setup_application(app, dp, bot=bot)
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 8443))
-    app.on_startup.append(on_startup)
-    app.on_shutdown.append(on_shutdown)
-    web.run_app(app, host="0.0.0.0", port=port)
+    try:
+        port = int(os.getenv("PORT", 8443))
+        app.on_startup.append(on_startup)
+        app.on_shutdown.append(on_shutdown)
+        logger.info(f"Starting server on port {port}")
+        web.run_app(app, host="0.0.0.0", port=port)
+    except Exception as e:
+        logger.error(f"Server failed to start: {e}")
+        raise
