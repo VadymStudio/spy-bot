@@ -26,8 +26,8 @@ load_dotenv()
 API_TOKEN = os.getenv('BOT_TOKEN')
 if not API_TOKEN:
     raise ValueError("BOT_TOKEN is not set in environment variables")
-ADMIN_ID = int(os.getenv('ADMIN_ID', '5280737551'))  # Заміни на свій Telegram ID
-bot = Bot(token=API_TOKEN)  # Без кастомної ClientSession
+ADMIN_ID = int(os.getenv('ADMIN_ID', '5280737551'))
+bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(bot=bot, storage=storage)
 
@@ -40,12 +40,12 @@ LOCATIONS = [
 ]
 rooms = {}
 last_save_time = 0
-SAVE_INTERVAL = 5  # Зберігати rooms.json не частіше, ніж раз на 5 секунд
+SAVE_INTERVAL = 5
 
 # Логування версії aiohttp
 logger.info(f"Using aiohttp version: {aiohttp.__version__}")
 
-# Функція для збереження rooms у файл
+# Функція для збереження rooms
 def save_rooms():
     global last_save_time
     current_time = time.time()
@@ -59,7 +59,7 @@ def save_rooms():
     except Exception as e:
         logger.error(f"Failed to save rooms: {e}")
 
-# Функція для завантаження rooms із файлу
+# Функція для завантаження rooms
 def load_rooms():
     global rooms
     try:
@@ -341,32 +341,38 @@ async def early_vote(message: types.Message):
                     InlineKeyboardButton("Проти", callback_data=f"early_vote_against_{token}"),
                 ]
             ])
+            logger.info(f"Early vote started for room {token}, keyboard: {keyboard.inline_keyboard}")
 
             await message.reply("Голосування за дострокове завершення гри! Час: 15 секунд.", reply_markup=keyboard)
 
             for i in range(15, 0, -1):
-                if token not in rooms or not room['vote_in_progress']:
+                if token not in rooms or not rooms[token]['vote_in_progress']:
+                    logger.info(f"Early vote for room {token} interrupted")
                     return
                 if i == 5:
                     for pid, _ in room['participants']:
                         await bot.send_message(pid, "5 секунд до кінця голосування!")
+                    logger.info(f"Early vote for room {token}: 5 seconds left")
                 await asyncio.sleep(1)
 
             room['vote_in_progress'] = False
             votes_for = room['votes_for']
             votes_against = room['votes_against']
             save_rooms()
+            logger.info(f"Early vote for room {token} ended: For={votes_for}, Against={votes_against}")
 
             if votes_for > votes_against:
                 room['game_started'] = False
                 await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=chat_id))
                 for pid, _ in room['participants']:
                     await bot.send_message(pid, f"Голосування успішне! Гра завершена. За: {votes_for}, Проти: {votes_against}")
-                await end_game(token)
+                logger.info(f"Early vote for room {token} succeeded, proceeding to final voting")
+                await show_voting_buttons(token)
             else:
                 room['banned_from_voting'].add(user_id)
                 for pid, _ in room['participants']:
                     await bot.send_message(pid, f"Голосування провалено. За: {votes_for}, Проти: {votes_against}")
+                logger.info(f"Early vote for room {token} failed")
             save_rooms()
             return
     await message.reply("Ви не перебуваєте в жодній кімнаті.")
@@ -374,45 +380,51 @@ async def early_vote(message: types.Message):
 # Обробник дострокового голосування
 @dp.callback_query(lambda c: c.data.startswith("early_vote_"))
 async def early_vote_callback(callback: types.CallbackQuery):
-    if maintenance_mode and callback.from_user.id != ADMIN_ID:
-        await callback.answer("Бот на технічному обслуговуванні!")
-        return
     user_id = callback.from_user.id
     token = callback.data.split('_')[-1]
     room = rooms.get(token)
+    logger.info(f"Early vote callback received: user={user_id}, token={token}, data={callback.data}")
     if not room or user_id not in [p[0] for p in room['participants']]:
         await callback.answer("Ви не в цій грі!")
+        logger.error(f"Early vote callback: User {user_id} not in room {token}")
         return
     if not room['vote_in_progress']:
         await callback.answer("Голосування закінчено!")
+        logger.info(f"Early vote callback: Voting not in progress for room {token}")
         return
     if user_id in room['voters']:
         await callback.answer("Ви вже проголосували!")
+        logger.info(f"Early vote callback: User {user_id} already voted in room {token}")
         return
 
     room['voters'].add(user_id)
     if callback.data.startswith("early_vote_for"):
         room['votes_for'] += 1
         await callback.answer("Ви проголосували 'За'!")
+        logger.info(f"Early vote callback: User {user_id} voted FOR in room {token}")
     else:
         room['votes_against'] += 1
         await callback.answer("Ви проголосували 'Проти'!")
+        logger.info(f"Early vote callback: User {user_id} voted AGAINST in room {token}")
     save_rooms()
 
 # Таймер гри
 async def run_timer(token):
     room = rooms.get(token)
     if not room:
+        logger.info(f"Run timer: Room {token} not found")
         return
     await asyncio.sleep(590)
     for i in range(10, -1, -1):
-        if token not in rooms or not room['game_started']:
+        if token not in rooms or not rooms[token]['game_started']:
+            logger.info(f"Run timer: Room {token} interrupted")
             return
         for pid, _ in room['participants']:
             await bot.send_message(pid, f"До кінця гри: {i} секунд")
         await asyncio.sleep(1)
     room['game_started'] = False
     save_rooms()
+    logger.info(f"Run timer: Game ended for room {token}, starting final voting")
     for pid, _ in room['participants']:
         await bot.send_message(pid, "Час вийшов! Голосуйте, хто шпигун.")
     await show_voting_buttons(token)
@@ -421,46 +433,67 @@ async def run_timer(token):
 async def show_voting_buttons(token):
     room = rooms.get(token)
     if not room:
+        logger.info(f"Show voting buttons: Room {token} not found")
         return
-    keyboard = InlineKeyboardMarkup()
-    for pid, username in room['participants']:
-        keyboard.add(InlineKeyboardButton(username, callback_data=f"vote_{token}_{pid}"))
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[])
+    buttons = [
+        InlineKeyboardButton(username, callback_data=f"vote_{token}_{pid}")
+        for pid, username in room['participants']
+    ]
+    # Додаємо по одній кнопці на рядок
+    for button in buttons:
+        keyboard.inline_keyboard.append([button])
+    logger.info(f"Final voting buttons for room {token}: {keyboard.inline_keyboard}")
     for pid, _ in room['participants']:
-        await bot.send_message(pid, "Оберіть, хто шпигун (30 секунд):", reply_markup=keyboard)
+        await bot.send_message(
+            pid,
+            "Оберіть, хто шпигун (30 секунд):",
+            reply_markup=keyboard
+        )
     await asyncio.sleep(20)
     for i in range(10, -1, -1):
         if token not in rooms:
+            logger.info(f"Final voting: Room {token} not found")
             return
         for pid, _ in room['participants']:
             await bot.send_message(pid, f"Час для голосування: {i} секунд")
         await asyncio.sleep(1)
+    logger.info(f"Final voting ended for room {token}")
     await process_voting_results(token)
 
 # Обробка голосів
 @dp.callback_query(lambda c: c.data.startswith('vote_'))
 async def process_vote(callback_query: types.CallbackQuery):
-    if maintenance_mode and callback_query.from_user.id != ADMIN_ID:
-        await callback_query.answer("Бот на технічному обслуговуванні!")
-        return
     user_id = callback_query.from_user.id
-    token, voted_pid = callback_query.data.split('_')[1], callback_query.data.split('_')[2]
+    data = callback_query.data.split('_')
+    if len(data) != 3:
+        await callback_query.answer("Помилка в голосуванні!")
+        logger.error(f"Process vote: Invalid callback data {callback_query.data}")
+        return
+    token, voted_pid = data[1], data[2]
     voted_pid = int(voted_pid)
     room = rooms.get(token)
+    logger.info(f"Process vote: user={user_id}, token={token}, voted_pid={voted_pid}")
     if not room or user_id not in [p[0] for p in room['participants']]:
         await callback_query.answer("Ви не в цій грі!")
+        logger.error(f"Process vote: User {user_id} not in room {token}")
         return
     if user_id in room['votes']:
         await callback_query.answer("Ви вже проголосували!")
+        logger.info(f"Process vote: User {user_id} already voted in room {token}")
         return
     room['votes'][user_id] = voted_pid
     save_rooms()
     await callback_query.answer("Ваш голос враховано!")
+    logger.info(f"Process vote: User {user_id} voted for {voted_pid} in room {token}")
 
 # Підрахунок голосів
 async def process_voting_results(token):
     room = rooms.get(token)
     if not room:
+        logger.info(f"Process voting results: Room {token} not found")
         return
+    logger.info(f"Processing voting results for room {token}, votes: {room['votes']}")
     if not room['votes']:
         for pid, _ in room['participants']:
             await bot.send_message(pid, "Ніхто не проголосував. Шпигун переміг!")
@@ -471,6 +504,7 @@ async def process_voting_results(token):
         vote_counts[voted_id] = vote_counts.get(voted_id, 0) + 1
     max_votes = max(vote_counts.values())
     suspected = [pid for pid, count in vote_counts.items() if count == max_votes]
+    logger.info(f"Voting results for room {token}: vote_counts={vote_counts}, suspected={suspected}")
     if len(suspected) == 1 and suspected[0] == room['spy']:
         for pid, _ in room['participants']:
             await bot.send_message(pid, f"Ви знайшли шпигуна, але він ще може вгадати локацію!")
@@ -480,6 +514,7 @@ async def process_voting_results(token):
             await asyncio.sleep(20)
             for i in range(10, -1, -1):
                 if token not in rooms:
+                    logger.info(f"Spy guess: Room {token} not found")
                     return
                 await bot.send_message(room['spy'], f"Час для вгадування: {i} секунд")
                 await asyncio.sleep(1)
@@ -492,6 +527,7 @@ async def process_voting_results(token):
 async def end_game(token):
     room = rooms.get(token)
     if not room:
+        logger.info(f"End game: Room {token} not found")
         return
     spy_username = next(username for pid, username in room['participants'] if pid == room['spy'])
     result = (
@@ -517,6 +553,7 @@ async def end_game(token):
     room['vote_in_progress'] = False
     room['banned_from_voting'] = set()
     save_rooms()
+    logger.info(f"Game ended for room {token}")
 
 # Вгадування шпигуна
 @dp.message(lambda message: any(room.get('waiting_for_spy_guess') and message.from_user.id == room['spy'] for room in rooms.values()))
