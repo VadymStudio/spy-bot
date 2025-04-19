@@ -6,6 +6,7 @@ import json
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command, StateFilter
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand, BotCommandScopeChat
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
@@ -177,7 +178,7 @@ async def create_room(message: types.Message):
 
 # Команда /join
 @dp.message(Command("join"))
-async def join_room(message: types.Message):
+async def join_room(message: types.Message, state: FSMContext):
     if await check_maintenance(message):
         return
     active_users.add(message.from_user.id)
@@ -187,13 +188,13 @@ async def join_room(message: types.Message):
             await message.reply("Ви вже в кімнаті! Спочатку покиньте її (/leave).")
             return
     await message.answer("Введіть токен кімнати:")
-    await dp.storage.set_state(user=user_id, state=RoomStates.waiting_for_token)
+    await state.set_state(RoomStates.waiting_for_token)
 
 # Обробка токена
 @dp.message(StateFilter(RoomStates.waiting_for_token))
-async def process_token(message: types.Message):
+async def process_token(message: types.Message, state: FSMContext):
     if await check_maintenance(message):
-        await dp.storage.set_state(user=message.from_user.id, state=None)
+        await state.clear()
         return
     active_users.add(message.from_user.id)
     token = message.text.strip().lower()  # Ігноруємо регістр
@@ -221,7 +222,7 @@ async def process_token(message: types.Message):
             await message.reply("Ви вже в цій кімнаті!")
     else:
         await message.reply(f"Кімнати з токеном `{token}` не існує. Спробуйте ще раз.")
-    await dp.storage.set_state(user=user_id, state=None)
+    await state.clear()
 
 # Команда /leave
 @dp.message(Command("leave"))
