@@ -11,7 +11,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command, StateFilter
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand, BotCommandScopeChat
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-from aiohttp import web, ClientSession, ClientTimeout
+from aiohttp import web
 import uuid
 import aiohttp
 
@@ -27,7 +27,7 @@ API_TOKEN = os.getenv('BOT_TOKEN')
 if not API_TOKEN:
     raise ValueError("BOT_TOKEN is not set in environment variables")
 ADMIN_ID = int(os.getenv('ADMIN_ID', '5280737551'))  # Заміни на свій Telegram ID
-bot = Bot(token=API_TOKEN, session=ClientSession(timeout=ClientTimeout(total=30)))  # Виправлений таймаут
+bot = Bot(token=API_TOKEN)  # Без кастомної ClientSession
 storage = MemoryStorage()
 dp = Dispatcher(bot=bot, storage=storage)
 
@@ -578,7 +578,7 @@ async def on_startup(_):
         if not webhook_host:
             raise ValueError("RENDER_EXTERNAL_HOSTNAME is not set in environment variables")
         webhook_url = f"https://{webhook_host}/webhook"
-        await bot.set_webhook(webhook_url, drop_pending_updates=True)
+        await bot.set_webhook(webhook_url, drop_pending_updates=True, request_timeout=30)
         logger.info(f"Webhook set to {webhook_url}")
     except Exception as e:
         logger.error(f"Startup failed: {e}")
