@@ -37,7 +37,10 @@ active_users = set()
 LOCATIONS = [
     "Аеропорт", "Банк", "Пляж", "Казино", "Цирк", "Школа", "Лікарня",
     "Готель", "Музей", "Ресторан", "Театр", "Парк", "Космічна станція",
-    "Підвал"
+    "Підвал", "Океан", "Острів", "Кафе", "Аквапарк", "Магазин", "Аптека",
+    "Зоопарк", "Місяць", "Річка", "Озеро", "Море", "Ліс", "Храм",
+    "Поле", "Село", "Місто", "Ракета", "Атомна станція", "Ферма",
+    "Водопад", "Спа салон", "Квартира", "Б плент", "Метро", "кабінет 3011"
 ]
 rooms = {}
 last_save_time = 0
@@ -74,6 +77,7 @@ def load_rooms():
                     room['banned_from_voting'] = set(room['banned_from_voting'])
                     room['voters'] = set(room['voters'])
                     room['votes'] = {int(k): int(v) for k, v in room['votes'].items()}
+                    room['timer_task'] = None
             logger.info("Rooms loaded from rooms.json")
     except Exception as e:
         logger.error(f"Failed to load rooms: {e}")
@@ -187,7 +191,8 @@ async def create_room(message: types.Message):
         'vote_in_progress': False,
         'votes_for': 0,
         'votes_against': 0,
-        'voters': set()
+        'voters': set(),
+        'timer_task': None
     }
     save_rooms()
     logger.info(f"Room created: {room_token}, rooms: {list(rooms.keys())}")
@@ -290,13 +295,20 @@ async def start_game(message: types.Message):
             if len(room['participants']) < 3:
                 await message.reply("Потрібно щонайменше 3 гравці, щоб почати гру.")
                 return
+            if room.get('timer_task'):
+                room['timer_task'].cancel()
+                logger.info(f"Cancelled previous timer for room {token}")
             room['game_started'] = True
             room['location'] = random.choice(LOCATIONS)
             room['spy'] = random.choice([p[0] for p in room['participants']])
             room['banned_from_voting'] = set()
+            room['votes'] = {}
+            room['vote_in_progress'] = False
+            room['votes_for'] = 0
+            room['votes_against'] = 0
+            room['voters'] = set()
             save_rooms()
 
-            # Додаємо команду /early_vote для всіх учасників
             commands = [BotCommand(command="early_vote", description="Дострокове завершення гри")]
             for pid, _ in room['participants']:
                 await bot.set_my_commands(commands, scope=BotCommandScopeChat(chat_id=pid))
@@ -308,8 +320,9 @@ async def start_game(message: types.Message):
                 else:
                     await bot.send_message(pid, f"Локація: {room['location']}\nОдин із гравців — шпигун!")
             for pid, _ in room['participants']:
-                await bot.send_message(pid, "Гра почалася! Обговорюйте і шукайте шпигуна. Час: 10 хвилин.")
-            await run_timer(token)
+                await bot.send_message(pid, "Гра почалася! Обговорюйте і шукайте шпигуна. Час: 15 хвилин.")
+            room['timer_task'] = asyncio.create_task(run_timer(token))
+            logger.info(f"Started new timer for room {token}")
             return
     await message.reply("Ви не перебуваєте в жодній кімнаті.")
 
@@ -326,10 +339,8 @@ async def early_vote(message: types.Message):
                 await message.reply("Гра не активна!")
                 return
             if user_id in room['banned_from_voting']:
-                await message.reply("Ви вже ініціювали голосування в цій партії!")
-                # Видаляємо команду для цього гравця
-                await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=user_id))
-                logger.info(f"Removed /early_vote command for user {user_id} in room {token}")
+                await message.reply("Ви вже використали дострокове голосування в цій партії!")
+                logger.info(f"User {user_id} attempted early vote but is banned in room {token}")
                 return
             if room['vote_in_progress']:
                 await message.reply("Голосування вже триває!")
@@ -339,6 +350,9 @@ async def early_vote(message: types.Message):
             room['votes_for'] = 0
             room['votes_against'] = 0
             room['voters'] = set()
+            room['banned_from_voting'].add(user_id)
+            await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=user_id))
+            logger.info(f"Removed /early_vote command for user {user_id} in room {token} after initiating vote")
             save_rooms()
 
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -378,18 +392,16 @@ async def early_vote(message: types.Message):
 
             if votes_for > votes_against:
                 room['game_started'] = False
+                if room.get('timer_task'):
+                    room['timer_task'].cancel()
+                    logger.info(f"Cancelled timer for room {token} due to early vote")
                 for pid, _ in room['participants']:
                     await bot.send_message(pid, f"Голосування успішне! Гра завершена. За: {votes_for}, Проти: {votes_against}")
-                    # Видаляємо команду для всіх
                     await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=pid))
-                    logger.info(f"Removed /early_vote command for user {pid} in room {token}")
+                    logger.info(f"Removed /early_vote command for user {pid} in room mildly {token}")
                 logger.info(f"Early vote for room {token} succeeded, proceeding to final voting")
                 await show_voting_buttons(token)
             else:
-                room['banned_from_voting'].add(user_id)
-                # Видаляємо команду для ініціатора
-                await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=user_id))
-                logger.info(f"Removed /early_vote command for user {user_id} in room {token}")
                 for pid, _ in room['participants']:
                     await bot.send_message(pid, f"Голосування провалено. За: {votes_for}, Проти: {votes_against}")
                 logger.info(f"Early vote for room {token} failed")
@@ -428,7 +440,6 @@ async def early_vote_callback(callback: types.CallbackQuery):
         logger.info(f"Early vote callback: User {user_id} voted AGAINST in room {token}")
     save_rooms()
 
-    # Якщо всі проголосували, завершуємо раніше
     if len(room['voters']) == len(room['participants']):
         room['vote_in_progress'] = False
         votes_for = room['votes_for']
@@ -437,15 +448,15 @@ async def early_vote_callback(callback: types.CallbackQuery):
         logger.info(f"Early vote for room {token} ended early: For={votes_for}, Against={votes_against}")
         if votes_for > votes_against:
             room['game_started'] = False
+            if room.get('timer_task'):
+                room['timer_task'].cancel()
+                logger.info(f"Cancelled timer for room {token} due to early vote")
             for pid, _ in room['participants']:
                 await bot.send_message(pid, f"Голосування успішне! Гра завершена. За: {votes_for}, Проти: {votes_against}")
                 await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=pid))
                 logger.info(f"Removed /early_vote command for user {pid} in room {token}")
             await show_voting_buttons(token)
         else:
-            room['banned_from_voting'].add(user_id)
-            await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=user_id))
-            logger.info(f"Removed /early_vote command for user {user_id} in room {token}")
             for pid, _ in room['participants']:
                 await bot.send_message(pid, f"Голосування провалено. За: {votes_for}, Проти: {votes_against}")
         save_rooms()
@@ -456,22 +467,26 @@ async def run_timer(token):
     if not room:
         logger.info(f"Run timer: Room {token} not found")
         return
-    await asyncio.sleep(890)
-    for i in range(10, -1, -1):
-        if token not in rooms or not rooms[token]['game_started']:
-            logger.info(f"Run timer: Room {token} interrupted")
-            return
+    try:
+        await asyncio.sleep(890)
+        for i in range(10, -1, -1):
+            if token not in rooms or not rooms[token]['game_started']:
+                logger.info(f"Run timer: Room {token} interrupted")
+                return
+            for pid, _ in room['participants']:
+                await bot.send_message(pid, f"До кінця гри: {i} секунд")
+            await asyncio.sleep(1)
+        room['game_started'] = False
+        save_rooms()
+        logger.info(f"Run timer: Game ended for room {token}, starting final voting")
         for pid, _ in room['participants']:
-            await bot.send_message(pid, f"До кінця гри: {i} секунд")
-        await asyncio.sleep(1)
-    room['game_started'] = False
-    save_rooms()
-    logger.info(f"Run timer: Game ended for room {token}, starting final voting")
-    for pid, _ in room['participants']:
-        await bot.send_message(pid, "Час вийшов! Голосуйте, хто шпигун.")
-        await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=pid))
-        logger.info(f"Removed /early_vote command for user {pid} in room {token}")
-    await show_voting_buttons(token)
+            await bot.send_message(pid, "Час вийшов! Голосуйте, хто шпигун.")
+            await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=pid))
+            logger.info(f"Removed /early_vote command for user {pid} in room {token}")
+        await show_voting_buttons(token)
+    except asyncio.CancelledError:
+        logger.info(f"Run timer: Timer for room {token} was cancelled")
+        return
 
 # Голосування
 async def show_voting_buttons(token):
@@ -495,7 +510,6 @@ async def show_voting_buttons(token):
     except Exception as e:
         logger.error(f"Failed to send final voting keyboard in room {token}: {e}")
 
-    # Таймер голосування
     for i in range(30, 0, -1):
         if token not in rooms:
             logger.info(f"Final voting: Room {token} not found")
@@ -504,7 +518,6 @@ async def show_voting_buttons(token):
             for pid, _ in room['participants']:
                 await bot.send_message(pid, f"Час для голосування: {i} секунд")
         await asyncio.sleep(1)
-        # Якщо всі проголосували, завершуємо раніше
         if len(room['votes']) == len(room['participants']):
             logger.info(f"Final voting for room {token} ended early: votes={room['votes']}")
             break
@@ -579,6 +592,9 @@ async def end_game(token):
     if not room:
         logger.info(f"End game: Room {token} not found")
         return
+    if room.get('timer_task'):
+        room['timer_task'].cancel()
+        logger.info(f"Cancelled timer for room {token} in end_game")
     spy_username = next(username for pid, username in room['participants'] if pid == room['spy'])
     result = (
         f"Гра завершена! Шпигун: {spy_username}\n"
@@ -593,7 +609,6 @@ async def end_game(token):
             await bot.send_message(pid, result + "/startgame - Почати нову гру")
         else:
             await bot.send_message(pid, result)
-        # Видаляємо команду /early_vote для всіх
         await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=pid))
         logger.info(f"Removed /early_vote command for user {pid} in room {token}")
     room['game_started'] = False
@@ -604,6 +619,7 @@ async def end_game(token):
     room['waiting_for_spy_guess'] = False
     room['vote_in_progress'] = False
     room['banned_from_voting'] = set()
+    room['timer_task'] = None
     save_rooms()
     logger.info(f"Game ended for room {token}")
 
