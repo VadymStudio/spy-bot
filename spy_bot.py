@@ -398,7 +398,7 @@ async def early_vote(message: types.Message):
                 for pid, _ in room['participants']:
                     await bot.send_message(pid, f"Голосування успішне! Гра завершена. За: {votes_for}, Проти: {votes_against}")
                     await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=pid))
-                    logger.info(f"Removed /early_vote command for user {pid} in room mildly {token}")
+                    logger.info(f"Removed /early_vote command for user {pid} in room {token}")
                 logger.info(f"Early vote for room {token} succeeded, proceeding to final voting")
                 await show_voting_buttons(token)
             else:
@@ -703,7 +703,18 @@ async def on_shutdown(_):
 # Налаштування сервера
 app = web.Application()
 webhook_path = "/webhook"
-SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=webhook_path)
+class CustomRequestHandler(SimpleRequestHandler):
+    async def post(self, request):
+        logger.info(f"Received webhook request: {request.method} {request.path} {await request.text()}")
+        try:
+            response = await super().post(request)
+            logger.info(f"Webhook response: {response.status}")
+            return response
+        except Exception as e:
+            logger.error(f"Webhook processing error: {e}")
+            raise
+
+CustomRequestHandler(dispatcher=dp, bot=bot).register(app, path=webhook_path)
 app.router.add_get("/health", health_check)
 setup_application(app, dp, bot=bot)
 
