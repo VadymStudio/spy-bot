@@ -36,7 +36,8 @@ maintenance_mode = False
 active_users = set()
 LOCATIONS = [
     "Аеропорт", "Банк", "Пляж", "Казино", "Цирк", "Школа", "Лікарня",
-    "Готель", "Музей", "Ресторан", "Театр", "Парк", "Космічна станція"
+    "Готель", "Музей", "Ресторан", "Театр", "Парк", "Космічна станція",
+    "Підвал"
 ]
 rooms = {}
 last_save_time = 0
@@ -455,7 +456,7 @@ async def run_timer(token):
     if not room:
         logger.info(f"Run timer: Room {token} not found")
         return
-    await asyncio.sleep(590)
+    await asyncio.sleep(890)
     for i in range(10, -1, -1):
         if token not in rooms or not rooms[token]['game_started']:
             logger.info(f"Run timer: Room {token} interrupted")
