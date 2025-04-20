@@ -107,6 +107,10 @@ async def maintenance_on(message: types.Message):
     global maintenance_mode, rooms
     maintenance_mode = True
     active_users.add(message.from_user.id)
+    for token, room in list(rooms.items()):
+        if room.get('timer_task'):
+            room['timer_task'].cancel()
+            logger.info(f"Cancelled timer for room {token} during maintenance")
     rooms.clear()
     save_rooms()
     for user_id in active_users:
@@ -268,8 +272,14 @@ async def leave_room(message: types.Message):
                     f"Гравець {message.from_user.first_name} покинув кімнату `{token}`."
                 )
             if not room['participants']:
+                if room.get('timer_task'):
+                    room['timer_task'].cancel()
+                    logger.info(f"Cancelled timer for room {token} due to empty room")
                 del rooms[token]
             elif room['owner'] == user_id:
+                if room.get('timer_task'):
+                    room['timer_task'].cancel()
+                    logger.info(f"Cancelled timer for room {token} due to owner leaving")
                 del rooms[token]
                 for pid, _ in room['participants']:
                     await bot.send_message(pid, f"Кімната `{token}` закрита, бо власник покинув її.")
@@ -295,6 +305,7 @@ async def start_game(message: types.Message):
             if len(room['participants']) < 3:
                 await message.reply("Потрібно щонайменше 3 гравці, щоб почати гру.")
                 return
+            # Скасовуємо попередній таймер, якщо він є
             if room.get('timer_task'):
                 room['timer_task'].cancel()
                 logger.info(f"Cancelled previous timer for room {token}")
@@ -468,7 +479,10 @@ async def run_timer(token):
         logger.info(f"Run timer: Room {token} not found")
         return
     try:
-        await asyncio.sleep(890)
+        await asyncio.sleep(890)  # 14 хвилин 50 секунд
+        if token not in rooms or not rooms[token]['game_started']:
+            logger.info(f"Run timer: Room {token} interrupted")
+            return
         for i in range(10, -1, -1):
             if token not in rooms or not rooms[token]['game_started']:
                 logger.info(f"Run timer: Room {token} interrupted")
@@ -647,6 +661,9 @@ async def handle_spy_guess(message: types.Message):
                     f"Локація: {room['location']}\n"
                     f"Шпигун не вгадав локацію. Гравці перемогли!"
                 )
+            if room.get('timer_task'):
+                room['timer_task'].cancel()
+                logger.info(f"Cancelled timer for room {token} in spy guess")
             for pid, _ in room['participants']:
                 await bot.send_message(pid, result)
                 await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=pid))
@@ -694,6 +711,10 @@ async def on_startup(_):
 async def on_shutdown(_):
     try:
         save_rooms()
+        for token, room in list(rooms.items()):
+            if room.get('timer_task'):
+                room['timer_task'].cancel()
+                logger.info(f"Cancelled timer for room {token} during shutdown")
         await bot.delete_webhook(drop_pending_updates=True)
         await bot.session.close()
         logger.info("Bot shutdown successfully")
