@@ -1,4 +1,6 @@
-.env
 venv/
+.venv/
 __pycache__/
-rooms.json
+*.pyc
+.env
+rooms.jsonrooms.json

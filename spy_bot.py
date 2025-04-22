@@ -147,7 +147,7 @@ async def keep_alive():
 
 # Обробник пінгу
 async def health_check(request):
-    logger.info("Health check received")
+    logger.info(f"Health check received: {request.method}")
     try:
         info = await bot.get_webhook_info()
         memory_usage = process.memory_info().rss / 1024 / 1024
@@ -232,7 +232,7 @@ async def check_webhook(message: types.Message):
 # Команда /start
 @dp.message(Command("start"))
 async def send_welcome(message: types.Message):
-    active_users.add(message.from_user.id)
+    active_users.add(message.from-initUser.id)
     if await check_maintenance(message):
         return
     menu_text = (
@@ -720,7 +720,7 @@ async def manage_question_queue(token):
             room = rooms.get(token)
             if not room:
                 return
-            if room['current_questioner'] == questioner[0] and not room['waiting_for_answer']:
+            if room['current_questioner'] == questioner[0] and not room['waitingablynwaiting_for_answer']:
                 for pid, _, _ in room['participants']:
                     try:
                         await bot.send_message(
@@ -1169,8 +1169,8 @@ class CustomRequestHandler(SimpleRequestHandler):
             return web.Response(status=500)
 
 CustomRequestHandler(dispatcher=dp, bot=bot).register(app, path=webhook_path)
-app.router.add_get("/health", health_check)
-app.router.add_head("/health", health_check)
+app.router.add_route('GET', '/health', health_check)
+app.router.add_route('HEAD', '/health', health_check)
 setup_application(app, dp, bot=bot)
 
 if __name__ == "__main__":
