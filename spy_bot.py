@@ -11,7 +11,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command, StateFilter
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand, BotCommandScopeChat
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-from aiohttp import web, ClientSession, ClientTimeout
+from aiohttp import web
 import uuid
 import aiohttp
 import tenacity
@@ -1026,9 +1026,9 @@ async def end_game(token):
     before_sleep=lambda retry_state: logger.info(f"Retrying webhook setup, attempt {retry_state.attempt_number}")
 )
 async def set_webhook_with_retry(webhook_url):
-    async with ClientSession(timeout=ClientTimeout(total=30)) as session:
-        await bot.set_webhook(webhook_url, drop_pending_updates=True, session=session)
-        logger.info(f"Webhook set to {webhook_url}")
+    logger.info(f"Attempting to set webhook: {webhook_url}")
+    await bot.set_webhook(webhook_url, drop_pending_updates=True)
+    logger.info(f"Webhook successfully set to {webhook_url}")
 
 # Налаштування webhook
 async def on_startup(_):
