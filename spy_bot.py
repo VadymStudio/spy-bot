@@ -9,10 +9,10 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command, StateFilter
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand, BotCommandScopeChat
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiogram.fsm.context import FSMContext
 from aiohttp import web, ClientSession
 import uuid
 import aiohttp
@@ -232,7 +232,7 @@ async def check_webhook(message: types.Message):
 # Команда /start
 @dp.message(Command("start"))
 async def send_welcome(message: types.Message):
-    active_users.add(message.from-initUser.id)
+    active_users.add(message.from_user.id)
     if await check_maintenance(message):
         return
     menu_text = (
@@ -720,7 +720,7 @@ async def manage_question_queue(token):
             room = rooms.get(token)
             if not room:
                 return
-            if room['current_questioner'] == questioner[0] and not room['waitingablynwaiting_for_answer']:
+            if room['current_questioner'] == questioner[0] and not room['waiting_for_answer']:
                 for pid, _, _ in room['participants']:
                     try:
                         await bot.send_message(
