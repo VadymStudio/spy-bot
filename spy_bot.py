@@ -81,7 +81,7 @@ def save_rooms():
         last_save_time = current_time
         logger.info("Rooms saved to rooms.json")
     except Exception as e:
-        logger.error(f"Failed to save rooms: {e}")
+        logger.error(f"Failed to save rooms: {e}", exc_info=True)
 
 # Функція для завантаження rooms
 def load_rooms():
@@ -101,15 +101,18 @@ def load_rooms():
                     room['question_timer_task'] = None
                     room['answer_timer_task'] = None
                     room['last_activity'] = time.time()
+                    room['first_round_completed'] = room.get('first_round_completed', False)
+                    room['last_minute_chat'] = room.get('last_minute_chat', False)
                     logger.info(f"Loaded room with participants: {room['participants']}")
             logger.info("Rooms loaded from rooms.json")
     except Exception as e:
-        logger.error(f"Failed to load rooms: {e}")
+        logger.error(f"Failed to load rooms: {e}", exc_info=True)
 
 # Функція для очищення старих кімнат
 async def cleanup_rooms():
     while True:
         try:
+            logger.info("Starting cleanup_rooms iteration")
             current_time = time.time()
             expired = []
             for token, room in list(rooms.items()):
@@ -128,7 +131,7 @@ async def cleanup_rooms():
                     logger.info(f"Removed expired room: {token}")
             save_rooms()
             memory_usage = process.memory_info().rss / 1024 / 1024
-            logger.info(f"Memory usage: {memory_usage:.2f} MB, Active rooms: {len(rooms)}")
+            logger.info(f"Cleanup complete. Memory usage: {memory_usage:.2f} MB, Active rooms: {len(rooms)}")
             await asyncio.sleep(300)
         except Exception as e:
             logger.error(f"Cleanup rooms error: {e}", exc_info=True)
@@ -139,22 +142,23 @@ async def keep_alive():
     async with ClientSession() as session:
         while True:
             try:
+                logger.info("Sending keep-alive ping")
                 async with session.get(f"https://spy-game-bot.onrender.com/health") as resp:
-                    logger.info(f"Keep-alive ping: {resp.status}")
+                    logger.info(f"Keep-alive ping response: {resp.status}")
             except Exception as e:
-                logger.error(f"Keep-alive error: {e}")
-            await asyncio.sleep(300)  # Кожні 5 хвилин
+                logger.error(f"Keep-alive error: {e}", exc_info=True)
+            await asyncio.sleep(300)
 
 # Обробник пінгу
 async def health_check(request):
-    logger.info(f"Health check received: {request.method}")
+    logger.info(f"Health check received: {request.method} {request.path}")
     try:
         info = await bot.get_webhook_info()
         memory_usage = process.memory_info().rss / 1024 / 1024
         logger.info(f"Webhook status: {info}, Memory usage: {memory_usage:.2f} MB")
         if not info.url:
             webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/webhook"
-            logger.warning("Webhook URL is empty, attempting to reset")
+            logger.warning(f"Webhook URL is empty, resetting to {webhook_url}")
             await bot.set_webhook(webhook_url, drop_pending_updates=True, max_connections=100)
             logger.info(f"Webhook reset to {webhook_url}")
         return web.Response(text="OK", status=200)
@@ -165,6 +169,7 @@ async def health_check(request):
 # Стани для FSM
 class RoomStates:
     waiting_for_token = "waiting_for_token"
+    waiting_for_target = "waiting_for_target"
 
 # Перевірка техобслуговування
 async def check_maintenance(message: types.Message):
@@ -224,6 +229,7 @@ async def check_webhook(message: types.Message):
         return
     try:
         info = await bot.get_webhook_info()
+        logger.info(f"Webhook check requested by admin: {info}")
         await message.reply(f"Webhook info: {info}")
     except Exception as e:
         logger.error(f"Failed to check webhook: {e}", exc_info=True)
@@ -312,6 +318,9 @@ async def create_room(message: types.Message):
         'question_timer_task': None,
         'answer_timer_task': None,
         'waiting_for_answer': False,
+        'question_order': 0,
+        'first_round_completed': False,
+        'last_minute_chat': False,
         'last_activity': time.time()
     }
     save_rooms()
@@ -466,6 +475,8 @@ async def start_game(message: types.Message):
             room['current_target'] = None
             room['question_order'] = 0
             room['waiting_for_answer'] = False
+            room['first_round_completed'] = False
+            room['last_minute_chat'] = False
             room['last_activity'] = time.time()
             save_rooms()
 
@@ -485,7 +496,7 @@ async def start_game(message: types.Message):
                     logger.error(f"Failed to send start message to user {pid}: {e}")
             for pid, _, _ in room['participants']:
                 try:
-                    await bot.send_message(pid, "Гра почалася! Задавайте питання по черзі (1 хвилина на питання, 30 секунд на відповідь). Час гри: 15 хвилин.")
+                    await bot.send_message(pid, "Гра почалася! Задавайте питання по черзі (1 хвилина на питання, 30 секунд на відповідь). Час гри: 20 хвилин.")
                 except Exception as e:
                     logger.error(f"Failed to send game start message to user {pid}: {e}")
             room['timer_task'] = asyncio.create_task(run_timer(token))
@@ -642,7 +653,19 @@ async def run_timer(token):
         room = rooms.get(token)
         if not room:
             return
-        await asyncio.sleep(890)
+        await asyncio.sleep(1140)  # 20 хвилин - 60 секунд
+        if token not in rooms or not rooms[token]['game_started']:
+            return
+        room = rooms.get(token)
+        if not room:
+            return
+        room['last_minute_chat'] = True
+        for pid, _, _ in room['participants']:
+            try:
+                await bot.send_message(pid, "Залишилась 1 хвилина до кінця гри! Ви можете спілкуватися вільно.")
+            except Exception as e:
+                logger.error(f"Failed to send 1-minute warning to user {pid}: {e}")
+        await asyncio.sleep(50)
         if token not in rooms or not rooms[token]['game_started']:
             return
         for i in range(10, -1, -1):
@@ -661,6 +684,7 @@ async def run_timer(token):
         if not room:
             return
         room['game_started'] = False
+        room['last_minute_chat'] = False
         if room.get('question_timer_task') and not room['question_timer_task'].done():
             room['question_timer_task'].cancel()
         if room.get('answer_timer_task') and not room['answer_timer_task'].done():
@@ -684,6 +708,92 @@ async def run_timer(token):
             room['last_activity'] = time.time()
             await end_game(token)
 
+# Вибір цілі для питання
+async def select_target(token, questioner_pid, questioner_username, questioner_order):
+    room = rooms.get(token)
+    if not room:
+        return
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"{username} (Гравець {order})", callback_data=f"select_target_{token}_{pid}")]
+        for pid, username, order in room['participants'] if pid != questioner_pid
+    ])
+    try:
+        await bot.send_message(
+            questioner_pid,
+            f"Оберіть, кому задати питання (30 секунд):",
+            reply_markup=keyboard
+        )
+    except Exception as e:
+        logger.error(f"Failed to send target selection keyboard to user {questioner_pid}: {e}")
+    for pid, _, _ in room['participants']:
+        if pid != questioner_pid:
+            try:
+                await bot.send_message(
+                    pid,
+                    f"@{questioner_username} обирає, кого запитати."
+                )
+            except Exception as e:
+                logger.error(f"Failed to send target selection notification to user {pid}: {e}")
+    await asyncio.sleep(30)
+    room = rooms.get(token)
+    if not room or not room['game_started']:
+        return
+    if room['current_questioner'] == questioner_pid and not room['current_target']:
+        for pid, _, _ in room['participants']:
+            try:
+                await bot.send_message(
+                    pid,
+                    f"Гравець {questioner_order} (@{questioner_username}) не обрав ціль для питання."
+                )
+            except Exception as e:
+                logger.error(f"Failed to send target timeout message to user {pid}: {e}")
+        room['current_questioner'] = None
+        room['question_order'] += 1
+        room['last_activity'] = time.time()
+        save_rooms()
+
+# Обробник вибору цілі
+@dp.callback_query(lambda c: c.data.startswith('select_target_'))
+async def process_target_selection(callback: types.CallbackQuery):
+    try:
+        user_id = callback.from_user.id
+        data = callback.data.split('_')
+        if len(data) != 3:
+            await callback.answer("Помилка вибору!")
+            return
+        token, target_pid = data[1], int(data[2])
+        room = rooms.get(token)
+        if not room or user_id not in [p[0] for p in room['participants']]:
+            await callback.answer("Ви не в цій грі!")
+            return
+        if user_id != room['current_questioner']:
+            await callback.answer("Зараз не ваша черга обирати!")
+            return
+        if not room['game_started'] or room['current_target']:
+            await callback.answer("Вибір уже зроблено або гра завершена!")
+            return
+        target = next((p for p in room['participants'] if p[0] == target_pid), None)
+        if not target:
+            await callback.answer("Гравець не знайдений!")
+            return
+        room['current_target'] = target_pid
+        room['waiting_for_answer'] = False
+        room['last_activity'] = time.time()
+        save_rooms()
+        questioner = next(p for p in room['participants'] if p[0] == user_id)
+        for pid, _, _ in room['participants']:
+            try:
+                await bot.send_message(
+                    pid,
+                    f"@{questioner[1]} задає питання @{target[1]}. Час: 60 секунд."
+                )
+            except Exception as e:
+                logger.error(f"Failed to send question prompt to user {pid}: {e}")
+        await callback.answer("Ціль обрано!")
+    except Exception as e:
+        logger.error(f"Process target selection error: {e}", exc_info=True)
+        await callback.answer("Помилка при виборі!")
+
 # Керування чергою питань
 async def manage_question_queue(token):
     try:
@@ -698,22 +808,30 @@ async def manage_question_queue(token):
             questioner_idx = room['question_order']
             questioner = room['participants'][questioner_idx]
             room['current_questioner'] = questioner[0]
-            possible_targets = [p for p in room['participants'] if p[0] != questioner[0]]
-            if not possible_targets:
-                break
-            target = random.choice(possible_targets)
-            room['current_target'] = target[0]
+            room['current_target'] = None
             room['waiting_for_answer'] = False
             room['last_activity'] = time.time()
             save_rooms()
-            for pid, _, _ in room['participants']:
-                try:
-                    await bot.send_message(
-                        pid,
-                        f"Гравець {questioner[2]} ({questioner[1]}) задає питання Гравцю {target[2]} ({target[1]}). Час: 60 секунд."
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to send question prompt to user {pid}: {e}")
+
+            if room['first_round_completed']:
+                # Дозволяємо гравцеві обрати ціль
+                await select_target(token, questioner[0], questioner[1], questioner[2])
+            else:
+                # Перше коло: випадковий вибір цілі
+                possible_targets = [p for p in room['participants'] if p[0] != questioner[0]]
+                if not possible_targets:
+                    break
+                target = random.choice(possible_targets)
+                room['current_target'] = target[0]
+                for pid, _, _ in room['participants']:
+                    try:
+                        await bot.send_message(
+                            pid,
+                            f"@{questioner[1]} задає питання @{target[1]}. Час: 60 секунд."
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to send question prompt to user {pid}: {e}")
+
             await asyncio.sleep(60)
             if token not in rooms or not rooms[token]['game_started']:
                 return
@@ -725,15 +843,23 @@ async def manage_question_queue(token):
                     try:
                         await bot.send_message(
                             pid,
-                            f"Гравець {questioner[2]} ({questioner[1]}) не встиг задати питання."
+                            f"Гравець {questioner[2]} (@{questioner[1]}) не встиг задати питання."
                         )
                     except Exception as e:
                         logger.error(f"Failed to send timeout message to user {pid}: {e}")
                 room['current_questioner'] = None
                 room['current_target'] = None
                 room['question_order'] += 1
+                if room['question_order'] == 0:
+                    room['first_round_completed'] = True
                 room['last_activity'] = time.time()
-            save_rooms()
+                save_rooms()
+            else:
+                # Якщо питання задане, чекаємо завершення відповіді
+                room['question_order'] += 1
+                if room['question_order'] == 0:
+                    room['first_round_completed'] = True
+                save_rooms()
     except asyncio.CancelledError:
         logger.info(f"Question queue: Question timer for room {token} was cancelled")
     except Exception as e:
@@ -762,7 +888,7 @@ async def answer_timer(token, target_pid, target_username, target_order):
                 try:
                     await bot.send_message(
                         pid,
-                        f"Гравець {target_order} ({target_username}) не встиг відповісти: {comment}"
+                        f"Гравець {target_order} (@{target_username}) не встиг відповісти: {comment}"
                     )
                 except Exception as e:
                     logger.error(f"Failed to send answer timeout to user {pid}: {e}")
@@ -770,6 +896,8 @@ async def answer_timer(token, target_pid, target_username, target_order):
             room['current_questioner'] = None
             room['current_target'] = None
             room['question_order'] += 1
+            if room['question_order'] == 0:
+                room['first_round_completed'] = True
             room['last_activity'] = time.time()
             save_rooms()
     except asyncio.CancelledError:
@@ -787,6 +915,7 @@ async def show_voting_buttons(token):
     try:
         room = rooms.get(token)
         if not room:
+            logger.info(f"show_voting_buttons: Room {token} not found")
             return
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text=f"{username} (Гравець {order})", callback_data=f"vote_{token}_{pid}")]
@@ -803,9 +932,11 @@ async def show_voting_buttons(token):
                 logger.error(f"Failed to send voting keyboard to user {pid}: {e}")
         for i in range(30, 0, -1):
             if token not in rooms:
+                logger.info(f"show_voting_buttons: Room {token} deleted during voting")
                 return
             room = rooms.get(token)
             if not room:
+                logger.info(f"show_voting_buttons: Room {token} not found during voting")
                 return
             if i <= 10:
                 for pid, _, _ in room['participants']:
@@ -857,6 +988,7 @@ async def process_voting_results(token):
     try:
         room = rooms.get(token)
         if not room:
+            logger.info(f"process_voting_results: Room {token} not found")
             return
         if not room['votes']:
             for pid, _, _ in room['participants']:
@@ -872,6 +1004,7 @@ async def process_voting_results(token):
             vote_counts[voted_id] = vote_counts.get(voted_id, 0) + 1
         max_votes = max(vote_counts.values())
         suspected = [pid for pid, count in vote_counts.items() if count == max_votes]
+        logger.info(f"process_voting_results: Suspected players: {suspected}, Spy: {room['spy']}")
         if len(suspected) == 1 and suspected[0] == room['spy']:
             for pid, _, _ in room['participants']:
                 try:
@@ -890,14 +1023,17 @@ async def process_voting_results(token):
                     keyboard.inline_keyboard.append(row)
                 try:
                     await bot.send_message(room['spy'], "Вгадайте локацію (30 секунд):", reply_markup=keyboard)
+                    logger.info(f"Sent location guess keyboard to spy {room['spy']}")
                 except Exception as e:
                     logger.error(f"Failed to send location keyboard to spy {room['spy']}: {e}")
                 room['waiting_for_spy_guess'] = True
                 for i in range(30, 0, -1):
                     if token not in rooms:
+                        logger.info(f"process_voting_results: Room {token} deleted during spy guess")
                         return
                     room = rooms.get(token)
                     if not room:
+                        logger.info(f"process_voting_results: Room {token} not found during spy guess")
                         return
                     if i <= 10:
                         try:
@@ -909,9 +1045,34 @@ async def process_voting_results(token):
                 if not room:
                     return
                 if room.get('waiting_for_spy_guess'):
+                    room['waiting_for_spy_guess'] = False
+                    spy_username = next(username for pid, username, _ in room['participants'] if pid == room['spy'])
+                    result = (
+                        f"Гра завершена! Шпигун: {spy_username}\n"
+                        f"Локація: {room['location']}\n"
+                        f"Шпигун не вгадав локацію. Гравці перемогли!"
+                    )
+                    for pid, _, _ in room['participants']:
+                        try:
+                            await bot.send_message(pid, result)
+                            await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=pid))
+                        except Exception as e:
+                            logger.error(f"Failed to send timeout guess result to user {pid}: {e}")
                     room['last_activity'] = time.time()
                     await end_game(token)
         else:
+            spy_username = next(username for pid, username, _ in room['participants'] if pid == room['spy'])
+            result = (
+                f"Гра завершена! Шпигун: {spy_username}\n"
+                f"Локація: {room['location']}\n"
+                f"Шпигуна не знайшли. Шпигун переміг!"
+            )
+            for pid, _, _ in room['participants']:
+                try:
+                    await bot.send_message(pid, result)
+                    await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=pid))
+                except Exception as e:
+                    logger.error(f"Failed to send game result to user {pid}: {e}")
             room['last_activity'] = time.time()
             await end_game(token)
     except Exception as e:
@@ -933,7 +1094,10 @@ async def handle_spy_guess_callback(callback: types.CallbackQuery):
             return
         token, guess = data[1], data[2]
         room = rooms.get(token)
-        if not room or user_id != room['spy']:
+        if not room:
+            await callback.answer("Гра не існує!")
+            return
+        if user_id != room['spy']:
             await callback.answer("Ви не шпигун!")
             return
         if not room.get('waiting_for_spy_guess'):
@@ -984,9 +1148,22 @@ async def handle_room_message(message: types.Message):
         username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
         for token, room in rooms.items():
             if user_id in [p[0] for p in room['participants']]:
-                if not room['game_started']:
-                    await message.reply("Гра ще не почалася. Чекайте на /startgame від власника.")
+                # Вільний чат до початку гри, після гри або за 1 хвилину до кінця
+                if not room['game_started'] or room['last_minute_chat']:
+                    msg = f"{username}: {message.text}"
+                    room['messages'].append(msg)
+                    room['messages'] = room['messages'][-100:]
+                    for pid, _, _ in room['participants']:
+                        if pid != user_id:
+                            try:
+                                await bot.send_message(pid, msg)
+                            except Exception as e:
+                                logger.error(f"Failed to send free chat message to user {pid}: {e}")
+                    room['last_activity'] = time.time()
+                    save_rooms()
                     return
+
+                # Обробка питань і відповідей
                 target_pid = room['current_target']
                 target = next((p for p in room['participants'] if p[0] == target_pid), None) if target_pid else None
                 questioner = next((p for p in room['participants'] if p[0] == room['current_questioner']), None) if room['current_questioner'] else None
@@ -995,7 +1172,7 @@ async def handle_room_message(message: types.Message):
                         await message.reply("Помилка: ціль не знайдена.")
                         return
                     questioner_order = next(p[2] for p in room['participants'] if p[0] == user_id)
-                    msg = f"Гравець {questioner_order} ({username}) задає питання Гравцю {target[2]} ({target[1]}): {message.text}"
+                    msg = f"@{username} задає питання @{target[1]}: {message.text}"
                     room['messages'].append(msg)
                     room['messages'] = room['messages'][-100:]
                     for pid, _, _ in room['participants']:
@@ -1017,7 +1194,7 @@ async def handle_room_message(message: types.Message):
                         await message.reply("Помилка: автор питання не знайдений.")
                         return
                     target_order = next(p[2] for p in room['participants'] if p[0] == user_id)
-                    msg = f"Гравець {target_order} ({username}) відповідає Гравцю {questioner[2]} ({questioner[1]}): {message.text}"
+                    msg = f"@{username} відповідає @{questioner[1]}: {message.text}"
                     room['messages'].append(msg)
                     room['messages'] = room['messages'][-100:]
                     for pid, _, _ in room['participants']:
@@ -1032,6 +1209,8 @@ async def handle_room_message(message: types.Message):
                     room['current_questioner'] = None
                     room['current_target'] = None
                     room['question_order'] += 1
+                    if room['question_order'] == 0:
+                        room['first_round_completed'] = True
                     room['last_activity'] = time.time()
                     save_rooms()
                     return
@@ -1047,6 +1226,7 @@ async def end_game(token):
     try:
         room = rooms.get(token)
         if not room:
+            logger.info(f"end_game: Room {token} not found")
             return
         if room.get('timer_task') and not room['timer_task'].done():
             room['timer_task'].cancel()
@@ -1087,6 +1267,8 @@ async def end_game(token):
         room['answer_timer_task'] = None
         room['waiting_for_answer'] = False
         room['question_order'] = 0
+        room['first_round_completed'] = False
+        room['last_minute_chat'] = False
         room['last_activity'] = time.time()
         save_rooms()
     except Exception as e:
@@ -1094,14 +1276,18 @@ async def end_game(token):
 
 # Налаштування webhook з retry
 @tenacity.retry(
-    stop=tenacity.stop_after_attempt(3),
-    wait=tenacity.wait_exponential(multiplier=1, min=4, max=10),
+    stop=tenacity.stop_after_attempt(5),
+    wait=tenacity.wait_exponential(multiplier=1, min=4, max=30),
     retry=tenacity.retry_if_exception_type(aiohttp.ClientError),
     before_sleep=lambda retry_state: logger.info(f"Retrying webhook setup, attempt {retry_state.attempt_number}")
 )
 async def set_webhook_with_retry(webhook_url):
     logger.info(f"Attempting to set webhook: {webhook_url}")
     await bot.set_webhook(webhook_url, drop_pending_updates=True, max_connections=100)
+    webhook_info = await bot.get_webhook_info()
+    logger.info(f"Webhook set, current info: {webhook_info}")
+    if not webhook_info.url:
+        raise aiohttp.ClientError("Webhook URL is still empty after setting")
     logger.info(f"Webhook successfully set to {webhook_url}")
 
 # Резервний polling
@@ -1117,6 +1303,7 @@ async def start_polling():
 # Налаштування webhook
 async def on_startup(_):
     try:
+        logger.info("Starting bot initialization")
         load_rooms()
         webhook_host = os.getenv('RENDER_EXTERNAL_HOSTNAME')
         logger.info(f"RENDER_EXTERNAL_HOSTNAME: {webhook_host}")
@@ -1131,8 +1318,9 @@ async def on_startup(_):
             logger.warning("Webhook not set, falling back to polling")
             asyncio.create_task(start_polling())
         asyncio.create_task(cleanup_rooms())
-        asyncio.create_task(keep_alive())  # Додаємо keep-alive
+        asyncio.create_task(keep_alive())
         logger.info("Cleanup rooms and keep-alive tasks started")
+        logger.info("Bot initialization completed")
     except Exception as e:
         logger.error(f"Startup failed: {e}", exc_info=True)
         asyncio.create_task(start_polling())
