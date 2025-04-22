@@ -4,6 +4,8 @@ import random
 import os
 import json
 import time
+import psutil
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -54,9 +56,12 @@ ANSWER_TIMEOUT_COMMENTS = [
 rooms = {}
 last_save_time = 0
 SAVE_INTERVAL = 5
+ROOM_EXPIRY = 3600  # 1 година
 
-# Логування версії aiohttp
+# Логування версії aiohttp і пам’яті
 logger.info(f"Using aiohttp version: {aiohttp.__version__}")
+process = psutil.Process()
+logger.info(f"Initial memory usage: {process.memory_info().rss / 1024 / 1024:.2f} MB")
 
 # Функція для збереження rooms
 def save_rooms():
@@ -70,6 +75,8 @@ def save_rooms():
             room_copy[token] = room.copy()
             room_copy[token]['banned_from_voting'] = list(room['banned_from_voting'])
             room_copy[token]['voters'] = list(room['voters'])
+            # Обмежуємо messages до 100
+            room_copy[token]['messages'] = room_copy[token]['messages'][-100:]
         with open('rooms.json', 'w') as f:
             json.dump(room_copy, f)
         last_save_time = current_time
@@ -94,14 +101,48 @@ def load_rooms():
                     room['timer_task'] = None
                     room['question_timer_task'] = None
                     room['answer_timer_task'] = None
+                    room['last_activity'] = time.time()  # Додаємо мітку активності
                     logger.info(f"Loaded room with participants: {room['participants']}")
             logger.info("Rooms loaded from rooms.json")
     except Exception as e:
         logger.error(f"Failed to load rooms: {e}")
 
+# Функція для очищення старих кімнат
+async def cleanup_rooms():
+    while True:
+        try:
+            current_time = time.time()
+            expired = []
+            for token, room in list(rooms.items()):
+                if current_time - room.get('last_activity', current_time) > ROOM_EXPIRY:
+                    expired.append(token)
+            for token in expired:
+                room = rooms.get(token)
+                if room:
+                    if room.get('timer_task'):
+                        room['timer_task'].cancel()
+                    if room.get('question_timer_task'):
+                        room['question_timer_task'].cancel()
+                    if room.get('answer_timer_task'):
+                        room['answer_timer_task'].cancel()
+                    del rooms[token]
+                    logger.info(f"Removed expired room: {token}")
+            save_rooms()
+            memory_usage = process.memory_info().rss / 1024 / 1024
+            logger.info(f"Memory usage: {memory_usage:.2f} MB, Active rooms: {len(rooms)}")
+            await asyncio.sleep(300)  # Перевіряємо кожні 5 хвилин
+        except Exception as e:
+            logger.error(f"Cleanup rooms error: {e}")
+            await asyncio.sleep(300)
+
 # Обробник пінгу для UptimeRobot
 async def health_check(request):
     logger.info("Health check received")
+    try:
+        info = await bot.get_webhook_info()
+        logger.info(f"Webhook status: {info}")
+    except Exception as e:
+        logger.error(f"Health check webhook error: {e}")
     return web.Response(text="OK", status=200)
 
 # Стани для FSM
@@ -225,7 +266,8 @@ async def create_room(message: types.Message):
         'current_target': None,
         'question_timer_task': None,
         'answer_timer_task': None,
-        'waiting_for_answer': False
+        'waiting_for_answer': False,
+        'last_activity': time.time()
     }
     save_rooms()
     logger.info(f"Room created: {room_token}, rooms: {list(rooms.keys())}")
@@ -267,6 +309,7 @@ async def process_token(message: types.Message, state: FSMContext):
             await message.reply("Гра в цій кімнаті вже почалася, ви не можете приєднатися.")
         elif user_id not in [p[0] for p in rooms[token]['participants']]:
             rooms[token]['participants'].append((user_id, username, 0))
+            rooms[token]['last_activity'] = time.time()
             save_rooms()
             for pid, _, _ in rooms[token]['participants']:
                 if pid != user_id:
@@ -297,6 +340,7 @@ async def leave_room(message: types.Message):
     for token, room in list(rooms.items()):
         if user_id in [p[0] for p in room['participants']]:
             room['participants'] = [p for p in room['participants'] if p[0] != user_id]
+            room['last_activity'] = time.time()
             await message.reply(f"Ви покинули кімнату `{token}`.")
             for pid, _, _ in room['participants']:
                 try:
@@ -382,6 +426,7 @@ async def start_game(message: types.Message):
             room['current_target'] = None
             room['question_order'] = 0
             room['waiting_for_answer'] = False
+            room['last_activity'] = time.time()
             save_rooms()
 
             commands = [BotCommand(command="early_vote", description="Дострокове завершення гри")]
@@ -436,6 +481,7 @@ async def early_vote(message: types.Message):
             room['votes_against'] = 0
             room['voters'] = set()
             room['banned_from_voting'].add(user_id)
+            room['last_activity'] = time.time()
             try:
                 await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=user_id))
                 logger.info(f"Removed /early_vote command for user {user_id} in room {token}")
@@ -478,6 +524,7 @@ async def early_vote(message: types.Message):
             room['vote_in_progress'] = False
             votes_for = room['votes_for']
             votes_against = room['votes_against']
+            room['last_activity'] = time.time()
             save_rooms()
             logger.info(f"Early vote for room {token} ended: For={votes_for}, Against={votes_against}")
 
@@ -541,12 +588,14 @@ async def early_vote_callback(callback: types.CallbackQuery):
         room['votes_against'] += 1
         await callback.answer("Ви проголосували 'Проти'!")
         logger.info(f"Early vote callback: User {user_id} voted AGAINST in room {token}")
+    room['last_activity'] = time.time()
     save_rooms()
 
     if len(room['voters']) == len(room['participants']):
         room['vote_in_progress'] = False
         votes_for = room['votes_for']
         votes_against = room['votes_against']
+        room['last_activity'] = time.time()
         save_rooms()
         logger.info(f"Early vote for room {token} ended early: For={votes_for}, Against={votes_against}")
         if votes_for > votes_against:
@@ -583,6 +632,7 @@ async def run_timer(token):
         logger.info(f"Run timer: Room {token} not found")
         return
     try:
+        logger.info(f"Started game timer for room {token}")
         await asyncio.sleep(890)  # 14 хвилин 50 секунд
         if token not in rooms or not rooms[token]['game_started']:
             logger.info(f"Run timer: Room {token} interrupted")
@@ -604,6 +654,7 @@ async def run_timer(token):
         if room.get('answer_timer_task'):
             room['answer_timer_task'].cancel()
             logger.info(f"Cancelled answer timer for room {token} due to game end")
+        room['last_activity'] = time.time()
         save_rooms()
         logger.info(f"Run timer: Game ended for room {token}, starting final voting")
         for pid, _, _ in room['participants']:
@@ -619,6 +670,7 @@ async def run_timer(token):
     except Exception as e:
         logger.error(f"Run timer error in room {token}: {e}")
         room['game_started'] = False
+        room['last_activity'] = time.time()
         await end_game(token)
 
 # Керування чергою питань
@@ -628,6 +680,7 @@ async def manage_question_queue(token):
         logger.info(f"Question queue: Room {token} not found")
         return
     try:
+        logger.info(f"Started question queue for room {token}")
         while token in rooms and rooms[token]['game_started'] and not rooms[token].get('vote_in_progress'):
             room['question_order'] = room['question_order'] % len(room['participants'])
             questioner_idx = room['question_order']
@@ -636,10 +689,12 @@ async def manage_question_queue(token):
             # Обираємо випадкову ціль (крім себе)
             possible_targets = [p for p in room['participants'] if p[0] != questioner[0]]
             if not possible_targets:
+                logger.warning(f"No possible targets for questioner {questioner[0]} in room {token}")
                 break
             target = random.choice(possible_targets)
             room['current_target'] = target[0]
             room['waiting_for_answer'] = False
+            room['last_activity'] = time.time()
             save_rooms()
             for pid, _, _ in room['participants']:
                 try:
@@ -666,12 +721,15 @@ async def manage_question_queue(token):
                 room['current_questioner'] = None
                 room['current_target'] = None
                 room['question_order'] += 1
+                room['last_activity'] = time.time()
             save_rooms()
+        logger.info(f"Question queue ended for room {token}")
     except asyncio.CancelledError:
         logger.info(f"Question queue: Question timer for room {token} was cancelled")
     except Exception as e:
         logger.error(f"Question queue error in room {token}: {e}")
         room['game_started'] = False
+        room['last_activity'] = time.time()
         await end_game(token)
 
 # Таймер відповіді
@@ -681,6 +739,7 @@ async def answer_timer(token, target_pid, target_username, target_order):
         logger.info(f"Answer timer: Room {token} not found")
         return
     try:
+        logger.info(f"Started answer timer for player {target_pid} in room {token}")
         await asyncio.sleep(30)
         if token not in rooms or not rooms[token]['game_started']:
             logger.info(f"Answer timer: Room {token} interrupted")
@@ -699,6 +758,7 @@ async def answer_timer(token, target_pid, target_username, target_order):
             room['current_questioner'] = None
             room['current_target'] = None
             room['question_order'] += 1
+            room['last_activity'] = time.time()
             save_rooms()
             logger.info(f"Answer timer: Player {target_pid} timed out in room {token}")
     except asyncio.CancelledError:
@@ -706,6 +766,7 @@ async def answer_timer(token, target_pid, target_username, target_order):
     except Exception as e:
         logger.error(f"Answer timer error in room {token}: {e}")
         room['game_started'] = False
+        room['last_activity'] = time.time()
         await end_game(token)
 
 # Голосування
@@ -715,6 +776,7 @@ async def show_voting_buttons(token):
         logger.info(f"Show voting buttons: Room {token} not found")
         return
     try:
+        logger.info(f"Preparing voting buttons for room {token}")
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text=f"{username} (Гравець {order})", callback_data=f"vote_{token}_{pid}")]
             for pid, username, order in room['participants']
@@ -745,11 +807,13 @@ async def show_voting_buttons(token):
             if len(room['votes']) == len(room['participants']):
                 logger.info(f"Final voting for room {token} ended early: votes={room['votes']}")
                 break
+        room['last_activity'] = time.time()
         logger.info(f"Final voting ended for room {token}")
         await process_voting_results(token)
     except Exception as e:
         logger.error(f"Show voting buttons error in room {token}: {e}")
         room['game_started'] = False
+        room['last_activity'] = time.time()
         await end_game(token)
 
 # Обробка голосів
@@ -774,6 +838,7 @@ async def process_vote(callback_query: types.CallbackQuery):
         logger.info(f"Process vote: User {user_id} already voted in room {token}")
         return
     room['votes'][user_id] = voted_pid
+    room['last_activity'] = time.time()
     save_rooms()
     await callback_query.answer("Ваш голос враховано!")
     logger.info(f"Process vote: User {user_id} voted for {voted_pid} in room {token}")
@@ -792,6 +857,7 @@ async def process_voting_results(token):
                     await bot.send_message(pid, "Ніхто не проголосував. Шпигун переміг!")
                 except Exception as e:
                     logger.error(f"Failed to send no-votes result to user {pid}: {e}")
+            room['last_activity'] = time.time()
             await end_game(token)
             return
         vote_counts = {}
@@ -833,12 +899,15 @@ async def process_voting_results(token):
                             logger.error(f"Failed to send guess timer to spy {room['spy']}: {e}")
                     await asyncio.sleep(1)
                 if room.get('waiting_for_spy_guess'):
+                    room['last_activity'] = time.time()
                     await end_game(token)
         else:
+            room['last_activity'] = time.time()
             await end_game(token)
     except Exception as e:
         logger.error(f"Process voting results error in room {token}: {e}")
         room['game_started'] = False
+        room['last_activity'] = time.time()
         await end_game(token)
 
 # Обробка вгадування шпигуна (кнопки)
@@ -892,6 +961,7 @@ async def handle_spy_guess_callback(callback: types.CallbackQuery):
             logger.info(f"Removed /early_vote command for user {pid} in room {token}")
         except Exception as e:
             logger.error(f"Failed to send guess result to user {pid}: {e}")
+    room['last_activity'] = time.time()
     await end_game(token)
     await callback.answer("Ваш вибір враховано!")
 
@@ -920,6 +990,7 @@ async def handle_room_message(message: types.Message):
                 questioner_order = next(p[2] for p in room['participants'] if p[0] == user_id)
                 msg = f"Гравець {questioner_order} ({username}) задає питання Гравцю {target[2]} ({target[1]}): {message.text}"
                 room['messages'].append(msg)
+                room['messages'] = room['messages'][-100:]  # Обмежуємо до 100 повідомлень
                 for pid, _, _ in room['participants']:
                     try:
                         await bot.send_message(pid, msg)
@@ -931,6 +1002,7 @@ async def handle_room_message(message: types.Message):
                 room['answer_timer_task'] = asyncio.create_task(
                     answer_timer(token, target[0], target[1], target[2])
                 )
+                room['last_activity'] = time.time()
                 save_rooms()
                 logger.info(f"Question sent in room {token} by user {user_id} to {target_pid}")
                 return
@@ -943,6 +1015,7 @@ async def handle_room_message(message: types.Message):
                 target_order = next(p[2] for p in room['participants'] if p[0] == user_id)
                 msg = f"Гравець {target_order} ({username}) відповідає Гравцю {questioner[2]} ({questioner[1]}): {message.text}"
                 room['messages'].append(msg)
+                room['messages'] = room['messages'][-100:]  # Обмежуємо до 100 повідомлень
                 for pid, _, _ in room['participants']:
                     try:
                         await bot.send_message(pid, msg)
@@ -955,6 +1028,7 @@ async def handle_room_message(message: types.Message):
                 room['current_questioner'] = None
                 room['current_target'] = None
                 room['question_order'] += 1
+                room['last_activity'] = time.time()
                 save_rooms()
                 logger.info(f"Answer sent in room {token} by user {user_id} to {questioner[0]}")
                 return
@@ -1013,6 +1087,7 @@ async def end_game(token):
         room['answer_timer_task'] = None
         room['waiting_for_answer'] = False
         room['question_order'] = 0
+        room['last_activity'] = time.time()
         save_rooms()
         logger.info(f"Game ended for room {token}")
     except Exception as e:
@@ -1039,6 +1114,8 @@ async def on_startup(_):
             raise ValueError("RENDER_EXTERNAL_HOSTNAME is not set in environment variables")
         webhook_url = f"https://{webhook_host}/webhook"
         await set_webhook_with_retry(webhook_url)
+        asyncio.create_task(cleanup_rooms())
+        logger.info("Cleanup rooms task started")
     except Exception as e:
         logger.error(f"Startup failed: {e}")
         raise
