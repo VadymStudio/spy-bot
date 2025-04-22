@@ -11,9 +11,10 @@ from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command, StateFilter
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand, BotCommandScopeChat
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-from aiohttp import web
+from aiohttp import web, ClientSession, ClientTimeout
 import uuid
 import aiohttp
+import tenacity
 
 # Налаштування логування
 logging.basicConfig(level=logging.INFO)
@@ -47,7 +48,7 @@ ANSWER_TIMEOUT_COMMENTS = [
     "{username} рішив поспати",
     "{username}! В тебе клавіатура заїла?",
     "{username}! Мовчиш? Мовчання - знак згоди!",
-    "{username} відмовився відповідати"
+    "{username} відмовився відповідати",
     "{username} пішов чай заварити?"
 ]
 rooms = {}
@@ -86,13 +87,14 @@ def load_rooms():
                 rooms = {k: v for k, v in loaded_rooms.items()}
                 for room in rooms.values():
                     room['owner'] = int(room['owner'])
-                    room['participants'] = [(int(pid), username, order) if isinstance(p, list) else (int(p[0]), p[1], p[2]) for p in room['participants']]
+                    room['participants'] = [(int(p[0]), p[1], p[2]) for p in room['participants']]
                     room['banned_from_voting'] = set(room['banned_from_voting'])
                     room['voters'] = set(room['voters'])
                     room['votes'] = {int(k): int(v) for k, v in room['votes'].items()}
                     room['timer_task'] = None
                     room['question_timer_task'] = None
                     room['answer_timer_task'] = None
+                    logger.info(f"Loaded room with participants: {room['participants']}")
             logger.info("Rooms loaded from rooms.json")
     except Exception as e:
         logger.error(f"Failed to load rooms: {e}")
@@ -614,7 +616,10 @@ async def run_timer(token):
         await show_voting_buttons(token)
     except asyncio.CancelledError:
         logger.info(f"Run timer: Timer for room {token} was cancelled")
-        return
+    except Exception as e:
+        logger.error(f"Run timer error in room {token}: {e}")
+        room['game_started'] = False
+        await end_game(token)
 
 # Керування чергою питань
 async def manage_question_queue(token):
@@ -664,7 +669,10 @@ async def manage_question_queue(token):
             save_rooms()
     except asyncio.CancelledError:
         logger.info(f"Question queue: Question timer for room {token} was cancelled")
-        return
+    except Exception as e:
+        logger.error(f"Question queue error in room {token}: {e}")
+        room['game_started'] = False
+        await end_game(token)
 
 # Таймер відповіді
 async def answer_timer(token, target_pid, target_username, target_order):
@@ -695,7 +703,10 @@ async def answer_timer(token, target_pid, target_username, target_order):
             logger.info(f"Answer timer: Player {target_pid} timed out in room {token}")
     except asyncio.CancelledError:
         logger.info(f"Answer timer: Timer for room {token} was cancelled")
-        return
+    except Exception as e:
+        logger.error(f"Answer timer error in room {token}: {e}")
+        room['game_started'] = False
+        await end_game(token)
 
 # Голосування
 async def show_voting_buttons(token):
@@ -703,38 +714,43 @@ async def show_voting_buttons(token):
     if not room:
         logger.info(f"Show voting buttons: Room {token} not found")
         return
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"{username} (Гравець {order})", callback_data=f"vote_{token}_{pid}")]
-        for pid, username, order in room['participants']
-    ])
-    logger.info(f"Final voting buttons for room {token}")
-    for pid, _, _ in room['participants']:
-        try:
-            await bot.send_message(
-                pid,
-                "Оберіть, хто шпигун (30 секунд):",
-                reply_markup=keyboard
-            )
-        except Exception as e:
-            logger.error(f"Failed to send voting keyboard to user {pid}: {e}")
-        logger.info(f"Sent final voting keyboard to user {pid} in room {token}")
+    try:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"{username} (Гравець {order})", callback_data=f"vote_{token}_{pid}")]
+            for pid, username, order in room['participants']
+        ])
+        logger.info(f"Final voting buttons for room {token}")
+        for pid, _, _ in room['participants']:
+            try:
+                await bot.send_message(
+                    pid,
+                    "Оберіть, хто шпигун (30 секунд):",
+                    reply_markup=keyboard
+                )
+            except Exception as e:
+                logger.error(f"Failed to send voting keyboard to user {pid}: {e}")
+            logger.info(f"Sent final voting keyboard to user {pid} in room {token}")
 
-    for i in range(30, 0, -1):
-        if token not in rooms:
-            logger.info(f"Final voting: Room {token} not found")
-            return
-        if i <= 10:
-            for pid, _, _ in room['participants']:
-                try:
-                    await bot.send_message(pid, f"Час для голосування: {i} секунд")
-                except Exception as e:
-                    logger.error(f"Failed to send voting timer to user {pid}: {e}")
-        await asyncio.sleep(1)
-        if len(room['votes']) == len(room['participants']):
-            logger.info(f"Final voting for room {token} ended early: votes={room['votes']}")
-            break
-    logger.info(f"Final voting ended for room {token}")
-    await process_voting_results(token)
+        for i in range(30, 0, -1):
+            if token not in rooms:
+                logger.info(f"Final voting: Room {token} not found")
+                return
+            if i <= 10:
+                for pid, _, _ in room['participants']:
+                    try:
+                        await bot.send_message(pid, f"Час для голосування: {i} секунд")
+                    except Exception as e:
+                        logger.error(f"Failed to send voting timer to user {pid}: {e}")
+            await asyncio.sleep(1)
+            if len(room['votes']) == len(room['participants']):
+                logger.info(f"Final voting for room {token} ended early: votes={room['votes']}")
+                break
+        logger.info(f"Final voting ended for room {token}")
+        await process_voting_results(token)
+    except Exception as e:
+        logger.error(f"Show voting buttons error in room {token}: {e}")
+        room['game_started'] = False
+        await end_game(token)
 
 # Обробка голосів
 @dp.callback_query(lambda c: c.data.startswith('vote_'))
@@ -768,56 +784,61 @@ async def process_voting_results(token):
     if not room:
         logger.info(f"Process voting results: Room {token} not found")
         return
-    logger.info(f"Processing voting results for room {token}, votes: {room['votes']}")
-    if not room['votes']:
-        for pid, _, _ in room['participants']:
-            try:
-                await bot.send_message(pid, "Ніхто не проголосував. Шпигун переміг!")
-            except Exception as e:
-                logger.error(f"Failed to send no-votes result to user {pid}: {e}")
-        await end_game(token)
-        return
-    vote_counts = {}
-    for voted_id in room['votes'].values():
-        vote_counts[voted_id] = vote_counts.get(voted_id, 0) + 1
-    max_votes = max(vote_counts.values())
-    suspected = [pid for pid, count in vote_counts.items() if count == max_votes]
-    logger.info(f"Voting results for room {token}: vote_counts={vote_counts}, suspected={suspected}")
-    if len(suspected) == 1 and suspected[0] == room['spy']:
-        for pid, _, _ in room['participants']:
-            try:
-                await bot.send_message(pid, f"Ви знайшли шпигуна, але він ще може вгадати локацію!")
-            except Exception as e:
-                logger.error(f"Failed to send spy found message to user {pid}: {e}")
-        if room['spy'] in [p[0] for p in room['participants']]:
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[])
-            row = []
-            for loc in LOCATIONS:
-                row.append(InlineKeyboardButton(text=loc, callback_data=f"spy_guess_{token}_{loc}"))
-                if len(row) == 3:
+    try:
+        logger.info(f"Processing voting results for room {token}, votes: {room['votes']}")
+        if not room['votes']:
+            for pid, _, _ in room['participants']:
+                try:
+                    await bot.send_message(pid, "Ніхто не проголосував. Шпигун переміг!")
+                except Exception as e:
+                    logger.error(f"Failed to send no-votes result to user {pid}: {e}")
+            await end_game(token)
+            return
+        vote_counts = {}
+        for voted_id in room['votes'].values():
+            vote_counts[voted_id] = vote_counts.get(voted_id, 0) + 1
+        max_votes = max(vote_counts.values())
+        suspected = [pid for pid, count in vote_counts.items() if count == max_votes]
+        logger.info(f"Voting results for room {token}: vote_counts={vote_counts}, suspected={suspected}")
+        if len(suspected) == 1 and suspected[0] == room['spy']:
+            for pid, _, _ in room['participants']:
+                try:
+                    await bot.send_message(pid, f"Ви знайшли шпигуна, але він ще може вгадати локацію!")
+                except Exception as e:
+                    logger.error(f"Failed to send spy found message to user {pid}: {e}")
+            if room['spy'] in [p[0] for p in room['participants']]:
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[])
+                row = []
+                for loc in LOCATIONS:
+                    row.append(InlineKeyboardButton(text=loc, callback_data=f"spy_guess_{token}_{loc}"))
+                    if len(row) == 3:
+                        keyboard.inline_keyboard.append(row)
+                        row = []
+                if row:
                     keyboard.inline_keyboard.append(row)
-                    row = []
-            if row:
-                keyboard.inline_keyboard.append(row)
-            try:
-                await bot.send_message(room['spy'], "Вгадайте локацію (30 секунд):", reply_markup=keyboard)
-                logger.info(f"Sent location guess keyboard to spy {room['spy']} in room {token}")
-            except Exception as e:
-                logger.error(f"Failed to send location keyboard to spy {room['spy']}: {e}")
-            room['waiting_for_spy_guess'] = True
-            for i in range(30, 0, -1):
-                if token not in rooms:
-                    logger.info(f"Spy guess: Room {token} not found")
-                    return
-                if i <= 10:
-                    try:
-                        await bot.send_message(room['spy'], f"Час для вгадування: {i} секунд")
-                    except Exception as e:
-                        logger.error(f"Failed to send guess timer to spy {room['spy']}: {e}")
-                await asyncio.sleep(1)
-            if room.get('waiting_for_spy_guess'):
-                await end_game(token)
-    else:
+                try:
+                    await bot.send_message(room['spy'], "Вгадайте локацію (30 секунд):", reply_markup=keyboard)
+                    logger.info(f"Sent location guess keyboard to spy {room['spy']} in room {token}")
+                except Exception as e:
+                    logger.error(f"Failed to send location keyboard to spy {room['spy']}: {e}")
+                room['waiting_for_spy_guess'] = True
+                for i in range(30, 0, -1):
+                    if token not in rooms:
+                        logger.info(f"Spy guess: Room {token} not found")
+                        return
+                    if i <= 10:
+                        try:
+                            await bot.send_message(room['spy'], f"Час для вгадування: {i} секунд")
+                        except Exception as e:
+                            logger.error(f"Failed to send guess timer to spy {room['spy']}: {e}")
+                    await asyncio.sleep(1)
+                if room.get('waiting_for_spy_guess'):
+                    await end_game(token)
+        else:
+            await end_game(token)
+    except Exception as e:
+        logger.error(f"Process voting results error in room {token}: {e}")
+        room['game_started'] = False
         await end_game(token)
 
 # Обробка вгадування шпигуна (кнопки)
@@ -948,51 +969,66 @@ async def end_game(token):
     if not room:
         logger.info(f"End game: Room {token} not found")
         return
-    if room.get('timer_task'):
-        room['timer_task'].cancel()
-        logger.info(f"Cancelled timer for room {token} in end_game")
-    if room.get('question_timer_task'):
-        room['question_timer_task'].cancel()
-        logger.info(f"Cancelled question timer for room {token} in end_game")
-    if room.get('answer_timer_task'):
-        room['answer_timer_task'].cancel()
-        logger.info(f"Cancelled answer timer for room {token} in end_game")
-    spy_username = next(username for pid, username, _ in room['participants'] if pid == room['spy'])
-    result = (
-        f"Гра завершена! Шпигун: {spy_username}\n"
-        f"Локація: {room['location']}\n"
-        f"Код кімнати: {token}\n"
-        "Опції:\n"
-        "/leave - Покинути кімнату\n"
-    )
-    owner_id = room['owner']
-    for pid, _, _ in room['participants']:
-        try:
-            if pid == owner_id:
-                await bot.send_message(pid, result + "/startgame - Почати нову гру")
-            else:
-                await bot.send_message(pid, result)
-            await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=pid))
-            logger.info(f"Removed /early_vote command for user {pid} in room {token}")
-        except Exception as e:
-            logger.error(f"Failed to send end game message to user {pid}: {e}")
-    room['game_started'] = False
-    room['spy'] = None
-    room['location'] = None
-    room['votes'] = {}
-    room['messages'] = []
-    room['waiting_for_spy_guess'] = False
-    room['vote_in_progress'] = False
-    room['banned_from_voting'] = set()
-    room['timer_task'] = None
-    room['current_questioner'] = None
-    room['current_target'] = None
-    room['question_timer_task'] = None
-    room['answer_timer_task'] = None
-    room['waiting_for_answer'] = False
-    room['question_order'] = 0
-    save_rooms()
-    logger.info(f"Game ended for room {token}")
+    try:
+        if room.get('timer_task'):
+            room['timer_task'].cancel()
+            logger.info(f"Cancelled timer for room {token} in end_game")
+        if room.get('question_timer_task'):
+            room['question_timer_task'].cancel()
+            logger.info(f"Cancelled question timer for room {token} in end_game")
+        if room.get('answer_timer_task'):
+            room['answer_timer_task'].cancel()
+            logger.info(f"Cancelled answer timer for room {token} in end_game")
+        spy_username = next(username for pid, username, _ in room['participants'] if pid == room['spy'])
+        result = (
+            f"Гра завершена! Шпигун: {spy_username}\n"
+            f"Локація: {room['location']}\n"
+            f"Код кімнати: {token}\n"
+            "Опції:\n"
+            "/leave - Покинути кімнату\n"
+        )
+        owner_id = room['owner']
+        for pid, _, _ in room['participants']:
+            try:
+                if pid == owner_id:
+                    await bot.send_message(pid, result + "/startgame - Почати нову гру")
+                else:
+                    await bot.send_message(pid, result)
+                await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=pid))
+                logger.info(f"Removed /early_vote command for user {pid} in room {token}")
+            except Exception as e:
+                logger.error(f"Failed to send end game message to user {pid}: {e}")
+        room['game_started'] = False
+        room['spy'] = None
+        room['location'] = None
+        room['votes'] = {}
+        room['messages'] = []
+        room['waiting_for_spy_guess'] = False
+        room['vote_in_progress'] = False
+        room['banned_from_voting'] = set()
+        room['timer_task'] = None
+        room['current_questioner'] = None
+        room['current_target'] = None
+        room['question_timer_task'] = None
+        room['answer_timer_task'] = None
+        room['waiting_for_answer'] = False
+        room['question_order'] = 0
+        save_rooms()
+        logger.info(f"Game ended for room {token}")
+    except Exception as e:
+        logger.error(f"End game error in room {token}: {e}")
+
+# Налаштування webhook з retry
+@tenacity.retry(
+    stop=tenacity.stop_after_attempt(3),
+    wait=tenacity.wait_exponential(multiplier=1, min=4, max=10),
+    retry=tenacity.retry_if_exception_type(aiohttp.ClientError),
+    before_sleep=lambda retry_state: logger.info(f"Retrying webhook setup, attempt {retry_state.attempt_number}")
+)
+async def set_webhook_with_retry(webhook_url):
+    async with ClientSession(timeout=ClientTimeout(total=30)) as session:
+        await bot.set_webhook(webhook_url, drop_pending_updates=True, session=session)
+        logger.info(f"Webhook set to {webhook_url}")
 
 # Налаштування webhook
 async def on_startup(_):
@@ -1002,8 +1038,7 @@ async def on_startup(_):
         if not webhook_host:
             raise ValueError("RENDER_EXTERNAL_HOSTNAME is not set in environment variables")
         webhook_url = f"https://{webhook_host}/webhook"
-        await bot.set_webhook(webhook_url, drop_pending_updates=True, request_timeout=30)
-        logger.info(f"Webhook set to {webhook_url}")
+        await set_webhook_with_retry(webhook_url)
     except Exception as e:
         logger.error(f"Startup failed: {e}")
         raise
@@ -1039,7 +1074,7 @@ class CustomRequestHandler(SimpleRequestHandler):
             return response
         except Exception as e:
             logger.error(f"Webhook processing error: {e}")
-            raise
+            return web.Response(status=500)
 
 CustomRequestHandler(dispatcher=dp, bot=bot).register(app, path=webhook_path)
 app.router.add_get("/health", health_check)
