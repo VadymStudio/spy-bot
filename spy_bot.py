@@ -725,6 +725,8 @@ async def select_target(token, questioner_pid, questioner_username, questioner_o
         )
     except Exception as e:
         logger.error(f"Failed to send target selection keyboard to user {questioner_pid}: {e}")
+    # Виправлено форматування ніків
+    questioner_username = questioner_username.lstrip('@')  # Видаляємо @, якщо є
     for pid, _, _ in room['participants']:
         if pid != questioner_pid:
             try:
@@ -739,6 +741,8 @@ async def select_target(token, questioner_pid, questioner_username, questioner_o
     if not room or not room['game_started']:
         return
     if room['current_questioner'] == questioner_pid and not room['current_target']:
+        # Виправлено форматування ніків
+        questioner_username = questioner_username.lstrip('@')
         for pid, _, _ in room['participants']:
             try:
                 await bot.send_message(
@@ -781,11 +785,14 @@ async def process_target_selection(callback: types.CallbackQuery):
         room['last_activity'] = time.time()
         save_rooms()
         questioner = next(p for p in room['participants'] if p[0] == user_id)
+        # Виправлено форматування ніків
+        questioner_username = questioner[1].lstrip('@')
+        target_username = target[1].lstrip('@')
         for pid, _, _ in room['participants']:
             try:
                 await bot.send_message(
                     pid,
-                    f"@{questioner[1]} задає питання @{target[1]}. Час: 60 секунд."
+                    f"@{questioner_username} задає питання @{target_username}. Час: 60 секунд."
                 )
             except Exception as e:
                 logger.error(f"Failed to send question prompt to user {pid}: {e}")
@@ -823,11 +830,14 @@ async def manage_question_queue(token):
                     break
                 target = random.choice(possible_targets)
                 room['current_target'] = target[0]
+                # Виправлено форматування ніків
+                questioner_username = questioner[1].lstrip('@')
+                target_username = target[1].lstrip('@')
                 for pid, _, _ in room['participants']:
                     try:
                         await bot.send_message(
                             pid,
-                            f"@{questioner[1]} задає питання @{target[1]}. Час: 60 секунд."
+                            f"@{questioner_username} задає питання @{target_username}. Час: 60 секунд."
                         )
                     except Exception as e:
                         logger.error(f"Failed to send question prompt to user {pid}: {e}")
@@ -839,11 +849,13 @@ async def manage_question_queue(token):
             if not room:
                 return
             if room['current_questioner'] == questioner[0] and not room['waiting_for_answer']:
+                # Виправлено форматування ніків
+                questioner_username = questioner[1].lstrip('@')
                 for pid, _, _ in room['participants']:
                     try:
                         await bot.send_message(
                             pid,
-                            f"Гравець {questioner[2]} (@{questioner[1]}) не встиг задати питання."
+                            f"Гравець {questioner[2]} (@{questioner_username}) не встиг задати питання."
                         )
                     except Exception as e:
                         logger.error(f"Failed to send timeout message to user {pid}: {e}")
@@ -883,7 +895,9 @@ async def answer_timer(token, target_pid, target_username, target_order):
         if not room:
             return
         if room['waiting_for_answer'] and room['current_target'] == target_pid:
-            comment = random.choice(ANSWER_TIMEOUT_COMMENTS).format(username=target_username)
+            # Виправлено форматування ніків
+            target_username = target_username.lstrip('@')
+            comment = random.choice(ANSWER_TIMEOUT_COMMENTS).format(username=f"@{target_username}")
             for pid, _, _ in room['participants']:
                 try:
                     await bot.send_message(
@@ -1146,11 +1160,12 @@ async def handle_room_message(message: types.Message):
         active_users.add(message.from_user.id)
         user_id = message.from_user.id
         username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
+        username_clean = username.lstrip('@')  # Видаляємо @ для форматування
         for token, room in rooms.items():
             if user_id in [p[0] for p in room['participants']]:
                 # Вільний чат до початку гри, після гри або за 1 хвилину до кінця
                 if not room['game_started'] or room['last_minute_chat']:
-                    msg = f"{username}: {message.text}"
+                    msg = f"@{username_clean}: {message.text}"
                     room['messages'].append(msg)
                     room['messages'] = room['messages'][-100:]
                     for pid, _, _ in room['participants']:
@@ -1172,7 +1187,8 @@ async def handle_room_message(message: types.Message):
                         await message.reply("Помилка: ціль не знайдена.")
                         return
                     questioner_order = next(p[2] for p in room['participants'] if p[0] == user_id)
-                    msg = f"@{username} задає питання @{target[1]}: {message.text}"
+                    target_username = target[1].lstrip('@')
+                    msg = f"@{username_clean} задає питання @{target_username}: {message.text}"
                     room['messages'].append(msg)
                     room['messages'] = room['messages'][-100:]
                     for pid, _, _ in room['participants']:
@@ -1194,7 +1210,8 @@ async def handle_room_message(message: types.Message):
                         await message.reply("Помилка: автор питання не знайдений.")
                         return
                     target_order = next(p[2] for p in room['participants'] if p[0] == user_id)
-                    msg = f"@{username} відповідає @{questioner[1]}: {message.text}"
+                    questioner_username = questioner[1].lstrip('@')
+                    msg = f"@{username_clean} відповідає @{questioner_username}: {message.text}"
                     room['messages'].append(msg)
                     room['messages'] = room['messages'][-100:]
                     for pid, _, _ in room['participants']:
@@ -1213,6 +1230,9 @@ async def handle_room_message(message: types.Message):
                         room['first_round_completed'] = True
                     room['last_activity'] = time.time()
                     save_rooms()
+                    # Передаємо хід далі
+                    if room['game_started'] and not room.get('vote_in_progress'):
+                        room['question_timer_task'] = asyncio.create_task(manage_question_queue(token))
                     return
                 await message.reply("Зараз не ваша черга! Очікуйте питання або відповіді.")
                 return
