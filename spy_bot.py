@@ -28,6 +28,7 @@ API_TOKEN = os.getenv('BOT_TOKEN')
 if not API_TOKEN:
     raise ValueError("BOT_TOKEN is not set in environment variables")
 ADMIN_ID = int(os.getenv('ADMIN_ID', '5280737551'))
+USE_POLLING = os.getenv('USE_POLLING', 'false').lower() == 'true'
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(bot=bot, storage=storage)
@@ -53,14 +54,14 @@ CALLSIGNS = [
 rooms = {}
 last_save_time = 0
 SAVE_INTERVAL = 5
-ROOM_EXPIRY = 3600  # 1 година
+ROOM_EXPIRY = 3600
 
 # Логування версії та пам’яті
 logger.info(f"Using aiohttp version: {aiohttp.__version__}")
 process = psutil.Process()
 logger.info(f"Initial memory usage: {process.memory_info().rss / 1024 / 1024:.2f} MB")
 
-# Функція для збереження rooms
+# Функції для роботи з rooms (save_rooms, load_rooms, cleanup_rooms, keep_alive, health_check) без змін
 def save_rooms():
     global last_save_time
     current_time = time.time()
@@ -80,7 +81,6 @@ def save_rooms():
     except Exception as e:
         logger.error(f"Failed to save rooms: {e}", exc_info=True)
 
-# Функція для завантаження rooms
 def load_rooms():
     global rooms
     try:
@@ -102,7 +102,6 @@ def load_rooms():
     except Exception as e:
         logger.error(f"Failed to load rooms: {e}", exc_info=True)
 
-# Функція для очищення старих кімнат
 async def cleanup_rooms():
     while True:
         try:
@@ -128,7 +127,6 @@ async def cleanup_rooms():
             logger.error(f"Cleanup rooms error: {e}", exc_info=True)
             await asyncio.sleep(300)
 
-# Keep-alive пінг
 async def keep_alive():
     async with ClientSession() as session:
         while True:
@@ -141,7 +139,6 @@ async def keep_alive():
                 logger.error(f"Keep-alive error: {e}", exc_info=True)
             await asyncio.sleep(300)
 
-# Обробник пінгу
 async def health_check(request):
     logger.info(f"Health check received: {request.method} {request.path}")
     try:
@@ -160,7 +157,7 @@ async def check_maintenance(message: types.Message):
         return True
     return False
 
-# Команди техобслуговування
+# Команди адміністратора
 @dp.message(Command("maintenance_on"))
 async def maintenance_on(message: types.Message):
     if message.from_user.id != ADMIN_ID:
@@ -197,7 +194,6 @@ async def maintenance_off(message: types.Message):
             logger.error(f"Failed to send maintenance_off message to {user_id}: {e}")
     await message.reply("Технічне обслуговування вимкнено.")
 
-# Команда /check_webhook
 @dp.message(Command("check_webhook"))
 async def check_webhook(message: types.Message):
     if message.from_user.id != ADMIN_ID:
@@ -211,10 +207,21 @@ async def check_webhook(message: types.Message):
         logger.error(f"Failed to check webhook: {e}", exc_info=True)
         await message.reply(f"Error checking webhook: {e}")
 
-# Команда /start
+@dp.message(Command("reset_state"))
+async def reset_state(message: types.Message, state: FSMContext):
+    try:
+        await state.clear()
+        logger.info(f"FSM state reset for user {message.from_user.id}")
+        await message.reply("Стан FSM скинуто.")
+    except Exception as e:
+        logger.error(f"Failed to reset FSM state: {e}", exc_info=True)
+        await message.reply("Помилка при скиданні стану.")
+
+# Команди гри
 @dp.message(Command("start"))
 async def send_welcome(message: types.Message):
     active_users.add(message.from_user.id)
+    logger.info(f"Processing /start command from user {message.from_user.id}")
     if await check_maintenance(message):
         return
     menu_text = (
@@ -224,10 +231,10 @@ async def send_welcome(message: types.Message):
         "/join - Приєднатися до кімнати за токеном\n"
         "/startgame - Запустити гру (тільки власник)\n"
         "/leave - Покинути кімнату\n"
-        "/early_vote - Дострокове завершення гри (під час гри)\n\n"
+        "/early_vote - Дострокове завершення гри (під час гри)\n"
+        "/reset_state - Скинути стан бота\n\n"
         "Гравці спілкуються вільно, гра триває 20 хвилин."
     )
-    logger.info(f"User {message.from_user.id} sent /start")
     await message.reply(menu_text)
     if message.from_user.id == ADMIN_ID:
         await message.reply(
@@ -237,7 +244,6 @@ async def send_welcome(message: types.Message):
             "/check_webhook - Перевірити стан webhook"
         )
 
-# Команда /create
 @dp.message(Command("create"))
 async def create_room(message: types.Message):
     if await check_maintenance(message):
@@ -297,7 +303,6 @@ async def create_room(message: types.Message):
         "Поділіться токеном з іншими. Ви власник, запустіть гру командою /startgame."
     )
 
-# Команда /join
 @dp.message(Command("join"))
 async def join_room(message: types.Message, state: FSMContext):
     if await check_maintenance(message):
@@ -314,7 +319,6 @@ async def join_room(message: types.Message, state: FSMContext):
     await state.set_state("waiting_for_token")
     logger.info(f"User {user_id} prompted for room token")
 
-# Обробка токена
 @dp.message(StateFilter("waiting_for_token"))
 async def process_token(message: types.Message, state: FSMContext):
     if await check_maintenance(message):
@@ -349,7 +353,6 @@ async def process_token(message: types.Message, state: FSMContext):
         await message.reply(f"Кімнати з токеном {token} не існує. Спробуйте ще раз.")
     await state.clear()
 
-# Команда /leave
 @dp.message(Command("leave"))
 async def leave_room(message: types.Message):
     if await check_maintenance(message):
@@ -390,7 +393,6 @@ async def leave_room(message: types.Message):
     logger.info(f"User {user_id} not in any room")
     await message.reply("Ви не перебуваєте в жодній кімнаті.")
 
-# Команда /startgame
 @dp.message(Command("startgame"))
 async def start_game(message: types.Message):
     if await check_maintenance(message):
@@ -454,7 +456,6 @@ async def start_game(message: types.Message):
     logger.info(f"User {user_id} not in any room for /startgame")
     await message.reply("Ви не перебуваєте в жодній кімнаті.")
 
-# Команда /early_vote
 @dp.message(Command("early_vote"))
 async def early_vote(message: types.Message):
     if await check_maintenance(message):
@@ -537,7 +538,6 @@ async def early_vote(message: types.Message):
     logger.info(f"User {user_id} not in any room for /early_vote")
     await message.reply("Ви не перебуваєте в жодній кімнаті.")
 
-# Обробник дострокового голосування
 @dp.callback_query(lambda c: c.data.startswith("early_vote_"))
 async def early_vote_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
@@ -590,14 +590,13 @@ async def early_vote_callback(callback: types.CallbackQuery):
                 except Exception as e:
                     logger.error(f"Failed to send early vote failure to user {pid}: {e}")
 
-# Таймер гри
 async def run_timer(token):
     try:
         room = rooms.get(token)
         if not room:
             logger.info(f"Run timer: Room {token} not found")
             return
-        await asyncio.sleep(1140)  # 20 хвилин - 60 секунд
+        await asyncio.sleep(1140)
         if token not in rooms or not rooms[token]['game_started']:
             return
         room = rooms.get(token)
@@ -648,7 +647,6 @@ async def run_timer(token):
             room['last_activity'] = time.time()
             await end_game(token)
 
-# Голосування
 async def show_voting_buttons(token):
     try:
         room = rooms.get(token)
@@ -693,7 +691,6 @@ async def show_voting_buttons(token):
             room['last_activity'] = time.time()
             await end_game(token)
 
-# Обробка голосів
 @dp.callback_query(lambda c: c.data.startswith('vote_'))
 async def process_vote(callback_query: types.CallbackQuery):
     try:
@@ -725,7 +722,6 @@ async def process_vote(callback_query: types.CallbackQuery):
         logger.error(f"Process vote error: {e}", exc_info=True)
         await callback_query.answer("Помилка при голосуванні!")
 
-# Підрахунок голосів
 async def process_voting_results(token):
     try:
         room = rooms.get(token)
@@ -821,7 +817,6 @@ async def process_voting_results(token):
             room['last_activity'] = time.time()
             await end_game(token)
 
-# Обробка вгадування локації шпигуном
 @dp.message(StateFilter("waiting_for_spy_guess"))
 async def handle_spy_guess(message: types.Message, state: FSMContext):
     try:
@@ -844,7 +839,6 @@ async def handle_spy_guess(message: types.Message, state: FSMContext):
         await message.reply("Виникла помилка при обробці повідомлення.")
         await state.clear()
 
-# Чат у кімнаті
 @dp.message()
 async def handle_room_message(message: types.Message, state: FSMContext):
     try:
@@ -881,7 +875,6 @@ async def handle_room_message(message: types.Message, state: FSMContext):
         logger.error(f"Handle room message error: {e}", exc_info=True)
         await message.reply("Виникла помилка при обробці повідомлення.")
 
-# Завершення гри
 async def end_game(token):
     try:
         room = rooms.get(token)
@@ -921,13 +914,12 @@ async def end_game(token):
         room['last_minute_chat'] = False
         room['waiting_for_spy_guess'] = False
         room['spy_guess'] = None
-        room['participants'] = [(pid, username, None) for pid, username, _ in room['participants']]  # Скидаємо позивні
+        room['participants'] = [(pid, username, None) for pid, username, _ in room['participants']]
         save_rooms()
         logger.info(f"Game ended in room {token}")
     except Exception as e:
         logger.error(f"End game error in room {token}: {e}", exc_info=True)
 
-# Налаштування webhook з retry
 @tenacity.retry(
     stop=tenacity.stop_after_attempt(5),
     wait=tenacity.wait_exponential(multiplier=1, min=4, max=30),
@@ -941,24 +933,27 @@ async def set_webhook_with_retry(webhook_url):
     webhook_info = await bot.get_webhook_info()
     logger.info(f"Webhook set, current info: {webhook_info}")
     if not webhook_info.url:
+        logger.error("Webhook URL is empty after setting!")
         raise aiohttp.ClientError("Webhook URL is still empty after setting")
     logger.info(f"Webhook successfully set to {webhook_url}")
 
-# Налаштування запуску
 async def on_startup(_):
     try:
         logger.info("Starting bot initialization")
         load_rooms()
-        webhook_host = os.getenv('RENDER_EXTERNAL_HOSTNAME')
-        if not webhook_host:
-            raise ValueError("RENDER_EXTERNAL_HOSTNAME not set")
-        webhook_url = f"https://{webhook_host}/webhook"
-        await set_webhook_with_retry(webhook_url)
-        asyncio.create_task(cleanup_rooms())
-        asyncio.create_task(keep_alive())
-        logger.info("Cleanup rooms and keep-alive tasks started")
+        if USE_POLLING:
+            logger.info("Starting bot in polling mode")
+            await bot.delete_webhook(drop_pending_updates=True)
+            asyncio.create_task(cleanup_rooms())
+        else:
+            webhook_host = os.getenv('RENDER_EXTERNAL_HOSTNAME')
+            if not webhook_host:
+                raise ValueError("RENDER_EXTERNAL_HOSTNAME not set")
+            webhook_url = f"https://{webhook_host}/webhook"
+            await set_webhook_with_retry(webhook_url)
+            asyncio.create_task(cleanup_rooms())
+            asyncio.create_task(keep_alive())
         logger.info("Bot initialization completed")
-        # Перевірка стану webhook після встановлення
         webhook_info = await bot.get_webhook_info()
         logger.info(f"Webhook status after startup: {webhook_info}")
     except Exception as e:
@@ -978,7 +973,6 @@ async def on_shutdown(_):
     except Exception as e:
         logger.error(f"Shutdown failed: {e}", exc_info=True)
 
-# Налаштування сервера
 app = web.Application()
 webhook_path = "/webhook"
 class CustomRequestHandler(SimpleRequestHandler):
@@ -989,24 +983,30 @@ class CustomRequestHandler(SimpleRequestHandler):
             logger.info(f"Webhook data received: {data}")
             update = types.Update(**data)
             logger.info(f"Processed update: {update}")
-            await dp.feed_update(bot, update)  # Явно передаємо апдейт
+            await dp.feed_update(bot, update)
+            logger.info("Update successfully processed")
             return web.Response(status=200)
         except Exception as e:
             logger.error(f"Webhook processing error: {e}", exc_info=True)
             return web.Response(status=500)
 
-CustomRequestHandler(dispatcher=dp, bot=bot).register(app, path=webhook_path)
-app.router.add_route('GET', '/health', health_check)
-app.router.add_route('HEAD', '/health', health_check)
-setup_application(app, dp, bot=bot)
+if not USE_POLLING:
+    CustomRequestHandler(dispatcher=dp, bot=bot).register(app, path=webhook_path)
+    app.router.add_route('GET', '/health', health_check)
+    app.router.add_route('HEAD', '/health', health_check)
+    setup_application(app, dp, bot=bot)
 
 if __name__ == "__main__":
     try:
-        port = int(os.getenv("PORT", 8443))
+        port = int(os.getenv("PORT", 443))
         app.on_startup.append(on_startup)
         app.on_shutdown.append(on_shutdown)
-        logger.info(f"Starting server on port {port}")
-        web.run_app(app, host="0.0.0.0", port=port)
+        if USE_POLLING:
+            logger.info("Starting bot in polling mode")
+            asyncio.run(dp.start_polling(bot))
+        else:
+            logger.info(f"Starting server on port {port}")
+            web.run_app(app, host="0.0.0.0", port=port)
     except Exception as e:
         logger.error(f"Server failed to start: {e}", exc_info=True)
         raise
