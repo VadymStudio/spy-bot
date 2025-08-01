@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.filters import Command
+from aiogram.filters import Command, RegexpCommandsFilter
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand, BotCommandScopeChat
 from aiogram.fsm.context import FSMContext
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
@@ -35,6 +35,7 @@ dp = Dispatcher(bot=bot, storage=storage)
 # Глобальні змінні
 maintenance_mode = False
 active_users = set()
+polling_started = False  # Захист від повторного polling
 LOCATIONS = [
     "Аеропорт", "Банк", "Пляж", "Казино", "Цирк", "Школа", "Лікарня",
     "Готель", "Музей", "Ресторан", "Театр", "Парк", "Космічна станція",
@@ -315,16 +316,12 @@ async def join_room(message: types.Message, state: FSMContext):
     logger.info(f"User {user_id} prompted for room token")
 
 # Обробка токена
-@dp.message(lambda message: message.text)
+@dp.message(lambda message: message.text, state="waiting_for_token")
 async def process_token(message: types.Message, state: FSMContext):
     if await check_maintenance(message):
         await state.clear()
         return
     active_users.add(message.from_user.id)
-    current_state = await state.get_state()
-    if current_state != "waiting_for_token":
-        logger.info(f"User {message.from_user.id} sent text '{message.text}' but not in waiting_for_token state")
-        return
     token = message.text.strip().lower()
     user_id = message.from_user.id
     username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
@@ -825,12 +822,11 @@ async def process_voting_results(token):
             await end_game(token)
 
 # Обробка вгадування локації шпигуном
-@dp.message(lambda message: message.text)
+@dp.message(lambda message: message.text, state="waiting_for_spy_guess")
 async def handle_spy_guess(message: types.Message, state: FSMContext):
     try:
         user_id = message.from_user.id
-        current_state = await state.get_state()
-        logger.info(f"User {user_id} sent message: {message.text}, state: {current_state}")
+        logger.info(f"User {user_id} sent spy guess: {message.text}")
         for token, room in rooms.items():
             if user_id in [p[0] for p in room['participants']]:
                 if room['waiting_for_spy_guess'] and user_id == room['spy']:
@@ -840,36 +836,17 @@ async def handle_spy_guess(message: types.Message, state: FSMContext):
                     save_rooms()
                     logger.info(f"Spy {user_id} guessed location in room {token}: {message.text}")
                     await process_voting_results(token)
+                    await state.clear()
                     return
-                username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
-                username_clean = username.lstrip('@')
-                callsign = next((c for p, u, c in room['participants'] if p == user_id), None)
-                if room['game_started'] or room['last_minute_chat']:
-                    msg = f"{callsign}: {message.text}"
-                else:
-                    msg = f"@{username_clean}: {message.text}"
-                room['messages'].append(msg)
-                room['messages'] = room['messages'][-100:]
-                for pid, _, _ in room['participants']:
-                    if pid != user_id:
-                        try:
-                            await bot.send_message(pid, msg)
-                        except Exception as e:
-                            logger.error(f"Failed to send chat message to user {pid}: {e}")
-                room['last_activity'] = time.time()
-                save_rooms()
-                logger.info(f"Chat message in room {token}: {msg}")
-                return
-        if not await check_maintenance(message):
-            logger.info(f"User {user_id} not in any room, message: {message.text}")
-            await message.reply("Ви не перебуваєте в жодній кімнаті. Створіть (/create) або приєднайтесь (/join).")
+        logger.info(f"User {user_id} not in spy guess state or not spy")
     except Exception as e:
         logger.error(f"Handle spy guess error: {e}", exc_info=True)
         await message.reply("Виникла помилка при обробці повідомлення.")
+        await state.clear()
 
 # Чат у кімнаті
-@dp.message()
-async def handle_room_message(message: types.Message):
+@dp.message(lambda message: message.text)
+async def handle_room_message(message: types.Message, state: FSMContext):
     try:
         if await check_maintenance(message):
             return
@@ -967,11 +944,17 @@ async def set_webhook_with_retry(webhook_url):
 
 # Резервний polling
 async def start_polling():
+    global polling_started
+    if polling_started:
+        logger.warning("Polling already started, skipping")
+        return
+    polling_started = True
     try:
         logger.info(f"Starting polling for bot {bot.id}")
         await dp.start_polling(bot, handle_signals=False)
     except Exception as e:
         logger.error(f"Polling failed for bot {bot.id}: {e}", exc_info=True)
+        polling_started = False
         await asyncio.sleep(10)
         await start_polling()
 
