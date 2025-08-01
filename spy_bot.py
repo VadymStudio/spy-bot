@@ -4,12 +4,10 @@ import random
 import os
 import json
 import time
-import sys
 import psutil
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
-import aiogram
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.filters import Command, StateFilter
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand, BotCommandScopeChat
@@ -21,43 +19,17 @@ import aiohttp
 import tenacity
 
 # Налаштування логування
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('bot.log')
-    ]
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Завантажуємо змінні з .env
 load_dotenv()
 API_TOKEN = os.getenv('BOT_TOKEN')
-ADMIN_ID = os.getenv('ADMIN_ID')
-RENDER_EXTERNAL_HOSTNAME = os.getenv('RENDER_EXTERNAL_HOSTNAME', 'spy-game-bot.onrender.com')
-PORT = os.getenv('PORT', '443')
-USE_POLLING = os.getenv('USE_POLLING', 'false').lower() == 'true'
-
-# Перевірка змінних оточення
 if not API_TOKEN:
-    logger.error("BOT_TOKEN is not set in environment variables")
     raise ValueError("BOT_TOKEN is not set in environment variables")
-if not ADMIN_ID:
-    logger.error("ADMIN_ID is not set in environment variables")
-    raise ValueError("ADMIN_ID is not set in environment variables")
-try:
-    ADMIN_ID = int(ADMIN_ID)
-except ValueError:
-    logger.error("ADMIN_ID must be an integer")
-    raise ValueError("ADMIN_ID must be an integer")
-try:
-    PORT = int(PORT)
-except ValueError:
-    logger.error("PORT must be an integer")
-    raise ValueError("PORT must be an integer")
-
-# Ініціалізація бота
+ADMIN_ID = int(os.getenv('ADMIN_ID', '5280737551'))
+USE_POLLING = os.getenv('USE_POLLING', 'false').lower() == 'true'
+RENDER_EXTERNAL_HOSTNAME = os.getenv('RENDER_EXTERNAL_HOSTNAME', 'spy-game-bot.onrender.com')
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(bot=bot, storage=storage)
@@ -82,14 +54,11 @@ CALLSIGNS = [
 ]
 rooms = {}
 last_save_time = 0
-SAVE_INTERVAL = 10  # Збільшено для зменшення I/O
+SAVE_INTERVAL = 5
 ROOM_EXPIRY = 3600
-MAX_MESSAGES = 50  # Обмеження кількості повідомлень у rooms['messages']
 
 # Логування версії та пам’яті
-logger.info(f"Python version: {sys.version}")
-logger.info(f"aiogram version: {aiogram.__version__}")
-logger.info(f"aiohttp version: {aiohttp.__version__}")
+logger.info(f"Using aiohttp version: {aiohttp.__version__}")
 process = psutil.Process()
 logger.info(f"Initial memory usage: {process.memory_info().rss / 1024 / 1024:.2f} MB")
 
@@ -105,7 +74,7 @@ def save_rooms():
             room_copy[token] = room.copy()
             room_copy[token]['banned_from_voting'] = list(room['banned_from_voting'])
             room_copy[token]['voters'] = list(room['voters'])
-            room_copy[token]['messages'] = room_copy[token]['messages'][-MAX_MESSAGES:]
+            room_copy[token]['messages'] = room_copy[token]['messages'][-100:]
         with open('rooms.json', 'w') as f:
             json.dump(room_copy, f)
         last_save_time = current_time
@@ -130,8 +99,6 @@ def load_rooms():
                     room['last_activity'] = time.time()
                     room['last_minute_chat'] = room.get('last_minute_chat', False)
                     room['waiting_for_spy_guess'] = room.get('waiting_for_spy_guess', False)
-                    room['votes_for'] = room.get('votes_for', 0)
-                    room['votes_against'] = room.get('votes_against', 0)
                 logger.info("Rooms loaded from rooms.json")
     except Exception as e:
         logger.error(f"Failed to load rooms: {e}", exc_info=True)
@@ -162,19 +129,16 @@ async def cleanup_rooms():
             await asyncio.sleep(300)
 
 async def keep_alive():
-    session = ClientSession()
-    try:
+    async with ClientSession() as session:
         while True:
             try:
-                logger.info(f"Sending keep-alive ping to https://{RENDER_EXTERNAL_HOSTNAME}/health")
-                async with session.get(f"https://{RENDER_EXTERNAL_HOSTNAME}/health") as resp:
+                webhook_host = os.getenv('RENDER_EXTERNAL_HOSTNAME', 'spy-game-bot.onrender.com')
+                logger.info(f"Sending keep-alive ping to https://{webhook_host}/health")
+                async with session.get(f"https://{webhook_host}/health") as resp:
                     logger.info(f"Keep-alive ping response: {resp.status}")
             except Exception as e:
                 logger.error(f"Keep-alive error: {e}", exc_info=True)
             await asyncio.sleep(300)
-    finally:
-        await session.close()
-        logger.info("Closed keep_alive ClientSession")
 
 async def health_check(request):
     logger.info(f"Health check received: {request.method} {request.path}")
@@ -188,16 +152,16 @@ async def health_check(request):
         return web.Response(text=f"ERROR: {e}", status=500)
 
 async def check_webhook_periodically():
-    global USE_POLLING
     while True:
         try:
-            webhook_url = f"https://{RENDER_EXTERNAL_HOSTNAME}/webhook"
+            webhook_host = os.getenv('RENDER_EXTERNAL_HOSTNAME', 'spy-game-bot.onrender.com')
+            webhook_url = f"https://{webhook_host}/webhook"
             info = await bot.get_webhook_info()
             logger.info(f"Periodic webhook check: {info}")
-            if not info.url or info.url != webhook_url or info.pending_update_count > 10:
-                logger.warning(f"Webhook is not set or has issues. Current: {info.url}, Expected: {webhook_url}, Pending updates: {info.pending_update_count}")
+            if not info.url or info.url != webhook_url:
+                logger.warning(f"Webhook is not set or incorrect. Current: {info.url}, Expected: {webhook_url}")
                 await set_webhook_with_retry(webhook_url)
-            await asyncio.sleep(600)
+            await asyncio.sleep(600)  # Перевіряємо кожні 10 хвилин
         except Exception as e:
             logger.error(f"Periodic webhook check failed: {e}", exc_info=True)
             await asyncio.sleep(600)
@@ -914,7 +878,7 @@ async def handle_room_message(message: types.Message, state: FSMContext):
                 else:
                     msg = f"@{username_clean}: {message.text}"
                 room['messages'].append(msg)
-                room['messages'] = room['messages'][-MAX_MESSAGES:]
+                room['messages'] = room['messages'][-100:]
                 for pid, _, _ in room['participants']:
                     if pid != user_id:
                         try:
@@ -929,7 +893,7 @@ async def handle_room_message(message: types.Message, state: FSMContext):
         await message.reply("Ви не перебуваєте в жодній кімнаті. Створіть (/create) або приєднайтесь (/join).")
     except Exception as e:
         logger.error(f"Handle room message error: {e}", exc_info=True)
-        await message.reply("Помилка при обробці повідомлення.")
+        await message.reply("Виникла помилка при обробці повідомлення.")
 
 async def end_game(token):
     try:
@@ -979,7 +943,7 @@ async def end_game(token):
         logger.error(f"End game error in room {token}: {e}", exc_info=True)
 
 @tenacity.retry(
-    stop=tenacity.stop_after_attempt(15),
+    stop=tenacity.stop_after_attempt(10),
     wait=tenacity.wait_exponential(multiplier=2, min=5, max=60),
     retry=tenacity.retry_if_exception_type(aiohttp.ClientError),
     before_sleep=lambda retry_state: logger.info(f"Retrying webhook setup, attempt {retry_state.attempt_number}")
@@ -987,7 +951,7 @@ async def end_game(token):
 async def set_webhook_with_retry(webhook_url):
     logger.info(f"Attempting to set webhook: {webhook_url}")
     await bot.delete_webhook(drop_pending_updates=True)
-    await bot.set_webhook(webhook_url, drop_pending_updates=True, max_connections=100)
+    await bot.set_webhook(webhook_url, drop_pending_updates=True, max_connections=100, timeout=30)
     webhook_info = await bot.get_webhook_info()
     logger.info(f"Webhook set, current info: {webhook_info}")
     if not webhook_info.url:
@@ -996,7 +960,6 @@ async def set_webhook_with_retry(webhook_url):
     logger.info(f"Webhook successfully set to {webhook_url}")
 
 async def on_startup(_):
-    global USE_POLLING
     try:
         logger.info("Starting bot initialization")
         load_rooms()
@@ -1007,14 +970,7 @@ async def on_startup(_):
         else:
             webhook_url = f"https://{RENDER_EXTERNAL_HOSTNAME}/webhook"
             logger.info(f"Setting up webhook: {webhook_url}")
-            try:
-                await set_webhook_with_retry(webhook_url)
-            except Exception as e:
-                logger.error(f"Failed to set webhook after retries: {e}, switching to polling mode")
-                USE_POLLING = True
-                await bot.delete_webhook(drop_pending_updates=True)
-                asyncio.create_task(cleanup_rooms())
-                return
+            await set_webhook_with_retry(webhook_url)
             asyncio.create_task(cleanup_rooms())
             asyncio.create_task(keep_alive())
             asyncio.create_task(check_webhook_periodically())
@@ -1063,14 +1019,15 @@ if not USE_POLLING:
 
 if __name__ == "__main__":
     try:
+        port = int(os.getenv("PORT", 443))
         app.on_startup.append(on_startup)
         app.on_shutdown.append(on_shutdown)
         if USE_POLLING:
             logger.info("Starting bot in polling mode")
             asyncio.run(dp.start_polling(bot))
         else:
-            logger.info(f"Starting server on port {PORT}")
-            web.run_app(app, host="0.0.0.0", port=PORT)
+            logger.info(f"Starting server on port {port}")
+            web.run_app(app, host="0.0.0.0", port=port)
     except Exception as e:
         logger.error(f"Server failed to start: {e}", exc_info=True)
         raise
