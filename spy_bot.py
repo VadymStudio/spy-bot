@@ -55,7 +55,7 @@ last_save_time = 0
 SAVE_INTERVAL = 5
 ROOM_EXPIRY = 3600  # 1 година
 
-# Логування версії aiohttp і пам’яті
+# Логування версії та пам’яті
 logger.info(f"Using aiohttp version: {aiohttp.__version__}")
 process = psutil.Process()
 logger.info(f"Initial memory usage: {process.memory_info().rss / 1024 / 1024:.2f} MB")
@@ -133,8 +133,9 @@ async def keep_alive():
     async with ClientSession() as session:
         while True:
             try:
-                logger.info("Sending keep-alive ping")
-                async with session.get(f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/health") as resp:
+                webhook_host = os.getenv('RENDER_EXTERNAL_HOSTNAME')
+                logger.info(f"Sending keep-alive ping to https://{webhook_host}/health")
+                async with session.get(f"https://{webhook_host}/health") as resp:
                     logger.info(f"Keep-alive ping response: {resp.status}")
             except Exception as e:
                 logger.error(f"Keep-alive error: {e}", exc_info=True)
@@ -147,11 +148,6 @@ async def health_check(request):
         info = await bot.get_webhook_info()
         memory_usage = process.memory_info().rss / 1024 / 1024
         logger.info(f"Webhook status: {info}, Memory usage: {memory_usage:.2f} MB")
-        if not info.url:
-            webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/webhook"
-            logger.warning(f"Webhook URL is empty, resetting to {webhook_url}")
-            await bot.set_webhook(webhook_url, drop_pending_updates=True, max_connections=100)
-            logger.info(f"Webhook reset to {webhook_url}")
         return web.Response(text="OK", status=200)
     except Exception as e:
         logger.error(f"Health check error: {e}", exc_info=True)
@@ -303,7 +299,7 @@ async def create_room(message: types.Message):
 
 # Команда /join
 @dp.message(Command("join"))
-async def join_room(message: types.Message):
+async def join_room(message: types.Message, state: FSMContext):
     if await check_maintenance(message):
         return
     active_users.add(message.from_user.id)
@@ -315,7 +311,7 @@ async def join_room(message: types.Message):
             await message.reply("Ви вже в кімнаті! Спочатку покиньте її (/leave).")
             return
     await message.answer("Введіть токен кімнати:")
-    await FSMContext(storage).set_state("waiting_for_token")
+    await state.set_state("waiting_for_token")
     logger.info(f"User {user_id} prompted for room token")
 
 # Обробка токена
@@ -327,6 +323,7 @@ async def process_token(message: types.Message, state: FSMContext):
     active_users.add(message.from_user.id)
     current_state = await state.get_state()
     if current_state != "waiting_for_token":
+        logger.info(f"User {message.from_user.id} sent text '{message.text}' but not in waiting_for_token state")
         return
     token = message.text.strip().lower()
     user_id = message.from_user.id
@@ -756,8 +753,8 @@ async def process_voting_results(token):
         max_votes = max(vote_counts.values())
         suspected = [pid for pid, count in vote_counts.items() if count == max_votes]
         logger.info(f"process_voting_results: Suspected players: {suspected}, Spy: {room['spy']}")
-        spy_username = next(username for pid, username, _ in room['participants'] if pid == room['spy'])
-        spy_callsign = next(callsign for pid, _, callsign in room['participants'] if pid == room['spy'])
+        spy_username = next((username for pid, username, _ in room['participants'] if pid == room['spy']), "Невідомо")
+        spy_callsign = next((callsign for pid, _, callsign in room['participants'] if pid == room['spy']), "Невідомо")
         if len(suspected) == 1 and suspected[0] == room['spy']:
             room['waiting_for_spy_guess'] = True
             room['spy_guess'] = None
@@ -978,25 +975,13 @@ async def start_polling():
         await asyncio.sleep(10)
         await start_polling()
 
-# Налаштування webhook
+# Налаштування запуску
 async def on_startup(_):
     try:
         logger.info("Starting bot initialization")
         load_rooms()
-        webhook_host = os.getenv('RENDER_EXTERNAL_HOSTNAME')
-        logger.info(f"RENDER_EXTERNAL_HOSTNAME: {webhook_host}")
-        if not webhook_host:
-            logger.warning("RENDER_EXTERNAL_HOSTNAME not set, falling back to polling")
-            asyncio.create_task(start_polling())
-            return
-        webhook_url = f"https://{webhook_host}/webhook"
-        logger.info(f"Setting webhook: {webhook_url}")
-        await set_webhook_with_retry(webhook_url)
-        webhook_info = await bot.get_webhook_info()
-        logger.info(f"Webhook info after setup: {webhook_info}")
-        if not webhook_info.url:
-            logger.warning("Webhook not set, falling back to polling")
-            asyncio.create_task(start_polling())
+        logger.info("Forcing polling mode for debugging")
+        asyncio.create_task(start_polling())
         asyncio.create_task(cleanup_rooms())
         asyncio.create_task(keep_alive())
         logger.info("Cleanup rooms and keep-alive tasks started")
@@ -1025,6 +1010,8 @@ class CustomRequestHandler(SimpleRequestHandler):
     async def post(self, request):
         logger.info(f"Received webhook request: {request.method} {request.path}")
         try:
+            data = await request.json()
+            logger.info(f"Webhook data received: {data}")
             response = await super().post(request)
             logger.info(f"Webhook response: {response.status}")
             return response
