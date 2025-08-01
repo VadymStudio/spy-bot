@@ -11,6 +11,7 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand, BotCommandScopeChat
+from aiogram.fsm.context import FSMContext
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web, ClientSession
 import uuid
@@ -40,8 +41,7 @@ LOCATIONS = [
     "Підвал", "Океан", "Острів", "Кафе", "Аквапарк", "Магазин", "Аптека",
     "Зоопарк", "Місяць", "Річка", "Озеро", "Море", "Ліс", "Храм",
     "Поле", "Село", "Місто", "Ракета", "Атомна станція", "Ферма",
-    "Водопад", "Спа салон", "Квартира", "Метро", "Каналізація",
-    "Порт"
+    "Водопад", "Спа салон", "Квартира", "Метро", "Каналізація", "Порт"
 ]
 CALLSIGNS = [
     "Бобр Курва", "Кличко", "Фенікс", "Шашлик", "Мамкін хакер", "Сігма", "Деві Джонс", "Курт Кобейн",
@@ -134,7 +134,7 @@ async def keep_alive():
         while True:
             try:
                 logger.info("Sending keep-alive ping")
-                async with session.get(f"https://spy-game-bot.onrender.com/health") as resp:
+                async with session.get(f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/health") as resp:
                     logger.info(f"Keep-alive ping response: {resp.status}")
             except Exception as e:
                 logger.error(f"Keep-alive error: {e}", exc_info=True)
@@ -231,6 +231,7 @@ async def send_welcome(message: types.Message):
         "/early_vote - Дострокове завершення гри (під час гри)\n\n"
         "Гравці спілкуються вільно, гра триває 20 хвилин."
     )
+    logger.info(f"User {message.from_user.id} sent /start")
     await message.reply(menu_text)
     if message.from_user.id == ADMIN_ID:
         await message.reply(
@@ -248,12 +249,15 @@ async def create_room(message: types.Message):
     active_users.add(message.from_user.id)
     user_id = message.from_user.id
     username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
+    logger.info(f"User {user_id} ({username}) attempting to create room")
     for token, room in list(rooms.items()):
         if user_id in [p[0] for p in room['participants']]:
             if room['game_started']:
+                logger.info(f"User {user_id} is in active game in room {token}")
                 await message.reply("Ви в активній грі! Спочатку покиньте її (/leave).")
                 return
             room['participants'] = [p for p in room['participants'] if p[0] != user_id]
+            logger.info(f"User {user_id} left room {token}")
             await message.reply(f"Ви покинули кімнату {token}.")
             for pid, _, _ in room['participants']:
                 try:
@@ -262,8 +266,10 @@ async def create_room(message: types.Message):
                     logger.error(f"Failed to notify user {pid} about leave: {e}")
             if not room['participants']:
                 del rooms[token]
+                logger.info(f"Room {token} deleted (empty)")
             elif room['owner'] == user_id:
                 del rooms[token]
+                logger.info(f"Room {token} deleted (owner left)")
                 for pid, _, _ in room['participants']:
                     try:
                         await bot.send_message(pid, f"Кімната {token} закрита, бо власник покинув її.")
@@ -302,34 +308,39 @@ async def join_room(message: types.Message):
         return
     active_users.add(message.from_user.id)
     user_id = message.from_user.id
+    logger.info(f"User {user_id} sent /join")
     for room in rooms.values():
         if user_id in [p[0] for p in room['participants']]:
+            logger.info(f"User {user_id} already in a room")
             await message.reply("Ви вже в кімнаті! Спочатку покиньте її (/leave).")
             return
     await message.answer("Введіть токен кімнати:")
-    from aiogram.fsm.context import FSMContext
     await FSMContext(storage).set_state("waiting_for_token")
     logger.info(f"User {user_id} prompted for room token")
 
 # Обробка токена
-@dp.message(lambda message: message.text and message.get_state() == "waiting_for_token")
-async def process_token(message: types.Message):
-    from aiogram.fsm.context import FSMContext
+@dp.message(lambda message: message.text)
+async def process_token(message: types.Message, state: FSMContext):
     if await check_maintenance(message):
-        await FSMContext(storage).clear()
+        await state.clear()
         return
     active_users.add(message.from_user.id)
+    current_state = await state.get_state()
+    if current_state != "waiting_for_token":
+        return
     token = message.text.strip().lower()
     user_id = message.from_user.id
     username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
-    logger.info(f"Attempting to join room with token: {token}, available rooms: {list(rooms.keys())}")
+    logger.info(f"User {user_id} attempting to join room with token: {token}, available rooms: {list(rooms.keys())}")
     if token in rooms:
         if rooms[token]['game_started']:
+            logger.info(f"User {user_id} tried to join active game in room {token}")
             await message.reply("Гра в цій кімнаті вже почалася, ви не можете приєднатися.")
         elif user_id not in [p[0] for p in rooms[token]['participants']]:
             rooms[token]['participants'].append((user_id, username, None))
             rooms[token]['last_activity'] = time.time()
             save_rooms()
+            logger.info(f"User {user_id} ({username}) joined room {token}")
             for pid, _, _ in rooms[token]['participants']:
                 if pid != user_id:
                     try:
@@ -338,10 +349,12 @@ async def process_token(message: types.Message):
                         logger.error(f"Failed to notify user {pid} about join: {e}")
             await message.reply(f"Ви приєдналися до кімнати {token}!\nЧекайте, поки власник запустить гру (/startgame).")
         else:
+            logger.info(f"User {user_id} already in room {token}")
             await message.reply("Ви вже в цій кімнаті!")
     else:
+        logger.info(f"Room {token} not found for user {user_id}")
         await message.reply(f"Кімнати з токеном {token} не існує. Спробуйте ще раз.")
-    await FSMContext(storage).clear()
+    await state.clear()
 
 # Команда /leave
 @dp.message(Command("leave"))
@@ -350,24 +363,29 @@ async def leave_room(message: types.Message):
         return
     active_users.add(message.from_user.id)
     user_id = message.from_user.id
+    username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
+    logger.info(f"User {user_id} sent /leave")
     for token, room in list(rooms.items()):
         if user_id in [p[0] for p in room['participants']]:
             room['participants'] = [p for p in room['participants'] if p[0] != user_id]
             room['last_activity'] = time.time()
+            logger.info(f"User {user_id} left room {token}")
             await message.reply(f"Ви покинули кімнату {token}.")
             for pid, _, _ in room['participants']:
                 try:
-                    await bot.send_message(pid, f"Гравець {message.from_user.first_name} покинув кімнату {token}.")
+                    await bot.send_message(pid, f"Гравець {username} покинув кімнату {token}.")
                 except Exception as e:
                     logger.error(f"Failed to notify user {pid} about leave: {e}")
             if not room['participants']:
                 if room.get('timer_task') and not room['timer_task'].done():
                     room['timer_task'].cancel()
                 del rooms[token]
+                logger.info(f"Room {token} deleted (empty)")
             elif room['owner'] == user_id:
                 if room.get('timer_task') and not room['timer_task'].done():
                     room['timer_task'].cancel()
                 del rooms[token]
+                logger.info(f"Room {token} deleted (owner left)")
                 for pid, _, _ in room['participants']:
                     try:
                         await bot.send_message(pid, f"Кімната {token} закрита, бо власник покинув її.")
@@ -375,6 +393,7 @@ async def leave_room(message: types.Message):
                         logger.error(f"Failed to notify user {pid} about room closure: {e}")
             save_rooms()
             return
+    logger.info(f"User {user_id} not in any room")
     await message.reply("Ви не перебуваєте в жодній кімнаті.")
 
 # Команда /startgame
@@ -384,15 +403,19 @@ async def start_game(message: types.Message):
         return
     active_users.add(message.from_user.id)
     user_id = message.from_user.id
+    logger.info(f"User {user_id} sent /startgame")
     for token, room in rooms.items():
         if user_id in [p[0] for p in room['participants']]:
             if room['owner'] != user_id:
+                logger.info(f"User {user_id} is not owner of room {token}")
                 await message.reply("Тільки власник може запустити гру!")
                 return
             if room['game_started']:
+                logger.info(f"Game already started in room {token}")
                 await message.reply("Гра вже почалася!")
                 return
             if len(room['participants']) < 3:
+                logger.info(f"Not enough players in room {token}: {len(room['participants'])}")
                 await message.reply("Потрібно щонайменше 3 гравці, щоб почати гру.")
                 return
             if room.get('timer_task') and not room['timer_task'].done():
@@ -412,6 +435,7 @@ async def start_game(message: types.Message):
             room['spy_guess'] = None
             room['last_activity'] = time.time()
             save_rooms()
+            logger.info(f"Game started in room {token}, spy: {room['spy']}, location: {room['location']}")
             commands = [BotCommand(command="early_vote", description="Дострокове завершення гри")]
             for pid, _, _ in room['participants']:
                 try:
@@ -433,6 +457,7 @@ async def start_game(message: types.Message):
                     logger.error(f"Failed to send game start message to user {pid}: {e}")
             room['timer_task'] = asyncio.create_task(run_timer(token))
             return
+    logger.info(f"User {user_id} not in any room for /startgame")
     await message.reply("Ви не перебуваєте в жодній кімнаті.")
 
 # Команда /early_vote
@@ -442,15 +467,19 @@ async def early_vote(message: types.Message):
         return
     active_users.add(message.from_user.id)
     user_id = message.from_user.id
+    logger.info(f"User {user_id} sent /early_vote")
     for token, room in rooms.items():
         if user_id in [p[0] for p in room['participants']]:
             if not room['game_started']:
+                logger.info(f"Game not active in room {token}")
                 await message.reply("Гра не активна!")
                 return
             if user_id in room['banned_from_voting']:
+                logger.info(f"User {user_id} banned from voting in room {token}")
                 await message.reply("Ви вже використали дострокове голосування в цій партії!")
                 return
             if room['vote_in_progress']:
+                logger.info(f"Vote already in progress in room {token}")
                 await message.reply("Голосування вже триває!")
                 return
             room['vote_in_progress'] = True
@@ -492,6 +521,7 @@ async def early_vote(message: types.Message):
             votes_against = room['votes_against']
             room['last_activity'] = time.time()
             save_rooms()
+            logger.info(f"Early vote result in room {token}: For={votes_for}, Against={votes_against}")
             if votes_for > votes_against:
                 room['game_started'] = False
                 if room.get('timer_task') and not room['timer_task'].done():
@@ -510,6 +540,7 @@ async def early_vote(message: types.Message):
                     except Exception as e:
                         logger.error(f"Failed to send early vote failure to user {pid}: {e}")
             return
+    logger.info(f"User {user_id} not in any room for /early_vote")
     await message.reply("Ви не перебуваєте в жодній кімнаті.")
 
 # Обробник дострокового голосування
@@ -519,12 +550,15 @@ async def early_vote_callback(callback: types.CallbackQuery):
     token = callback.data.split('_')[-1]
     room = rooms.get(token)
     if not room or user_id not in [p[0] for p in room['participants']]:
+        logger.info(f"User {user_id} not in room {token} for early vote")
         await callback.answer("Ви не в цій грі!")
         return
     if not room['vote_in_progress']:
+        logger.info(f"Vote not in progress in room {token}")
         await callback.answer("Голосування закінчено!")
         return
     if user_id in room['voters']:
+        logger.info(f"User {user_id} already voted in room {token}")
         await callback.answer("Ви вже проголосували!")
         return
     room['voters'].add(user_id)
@@ -536,12 +570,14 @@ async def early_vote_callback(callback: types.CallbackQuery):
         await callback.answer("Ви проголосували 'Проти'!")
     room['last_activity'] = time.time()
     save_rooms()
+    logger.info(f"User {user_id} voted in room {token}, voters: {len(room['voters'])}, participants: {len(room['participants'])}")
     if len(room['voters']) == len(room['participants']):
         room['vote_in_progress'] = False
         votes_for = room['votes_for']
         votes_against = room['votes_against']
         room['last_activity'] = time.time()
         save_rooms()
+        logger.info(f"Early vote completed in room {token}: For={votes_for}, Against={votes_against}")
         if votes_for > votes_against:
             room['game_started'] = False
             if room.get('timer_task') and not room['timer_task'].done():
@@ -565,6 +601,7 @@ async def run_timer(token):
     try:
         room = rooms.get(token)
         if not room:
+            logger.info(f"Run timer: Room {token} not found")
             return
         await asyncio.sleep(1140)  # 20 хвилин - 60 секунд
         if token not in rooms or not rooms[token]['game_started']:
@@ -669,20 +706,24 @@ async def process_vote(callback_query: types.CallbackQuery):
         user_id = callback_query.from_user.id
         data = callback_query.data.split('_')
         if len(data) != 3:
+            logger.info(f"Invalid vote callback data: {callback_query.data}")
             await callback_query.answer("Помилка в голосуванні!")
             return
         token, voted_pid = data[1], data[2]
         voted_pid = int(voted_pid)
         room = rooms.get(token)
         if not room or user_id not in [p[0] for p in room['participants']]:
+            logger.info(f"User {user_id} not in room {token} for voting")
             await callback_query.answer("Ви не в цій грі!")
             return
         if user_id in room['votes']:
+            logger.info(f"User {user_id} already voted in room {token}")
             await callback_query.answer("Ви вже проголосували!")
             return
         room['votes'][user_id] = voted_pid
         room['last_activity'] = time.time()
         save_rooms()
+        logger.info(f"User {user_id} voted for {voted_pid} in room {token}")
         await callback_query.answer("Ваш голос враховано!")
         if len(room['votes']) == len(room['participants']):
             await process_voting_results(token)
@@ -700,6 +741,7 @@ async def process_voting_results(token):
         room['last_activity'] = time.time()
         save_rooms()
         if not room['votes']:
+            logger.info(f"No votes in room {token}")
             for pid, _, _ in room['participants']:
                 try:
                     await bot.send_message(pid, "Ніхто не проголосував. Шпигун переміг!")
@@ -721,6 +763,7 @@ async def process_voting_results(token):
             room['spy_guess'] = None
             room['last_activity'] = time.time()
             save_rooms()
+            logger.info(f"Spy {room['spy']} detected in room {token}, waiting for guess")
             for pid, _, _ in room['participants']:
                 try:
                     if pid == room['spy']:
@@ -745,6 +788,7 @@ async def process_voting_results(token):
             room['waiting_for_spy_guess'] = False
             room['last_activity'] = time.time()
             spy_guess = room.get('spy_guess', '').lower().strip()
+            logger.info(f"Spy guess in room {token}: {spy_guess}, Actual location: {room['location']}")
             if spy_guess == room['location'].lower():
                 result = (
                     f"Гра завершена! Шпигун: {spy_username} ({spy_callsign})\n"
@@ -785,9 +829,11 @@ async def process_voting_results(token):
 
 # Обробка вгадування локації шпигуном
 @dp.message(lambda message: message.text)
-async def handle_spy_guess(message: types.Message):
+async def handle_spy_guess(message: types.Message, state: FSMContext):
     try:
         user_id = message.from_user.id
+        current_state = await state.get_state()
+        logger.info(f"User {user_id} sent message: {message.text}, state: {current_state}")
         for token, room in rooms.items():
             if user_id in [p[0] for p in room['participants']]:
                 if room['waiting_for_spy_guess'] and user_id == room['spy']:
@@ -795,6 +841,7 @@ async def handle_spy_guess(message: types.Message):
                     room['waiting_for_spy_guess'] = False
                     room['last_activity'] = time.time()
                     save_rooms()
+                    logger.info(f"Spy {user_id} guessed location in room {token}: {message.text}")
                     await process_voting_results(token)
                     return
                 username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
@@ -814,8 +861,10 @@ async def handle_spy_guess(message: types.Message):
                             logger.error(f"Failed to send chat message to user {pid}: {e}")
                 room['last_activity'] = time.time()
                 save_rooms()
+                logger.info(f"Chat message in room {token}: {msg}")
                 return
         if not await check_maintenance(message):
+            logger.info(f"User {user_id} not in any room, message: {message.text}")
             await message.reply("Ви не перебуваєте в жодній кімнаті. Створіть (/create) або приєднайтесь (/join).")
     except Exception as e:
         logger.error(f"Handle spy guess error: {e}", exc_info=True)
@@ -831,6 +880,7 @@ async def handle_room_message(message: types.Message):
         user_id = message.from_user.id
         username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
         username_clean = username.lstrip('@')
+        logger.info(f"User {user_id} sent message in room handler: {message.text}")
         for token, room in rooms.items():
             if user_id in [p[0] for p in room['participants']]:
                 callsign = next((c for p, u, c in room['participants'] if p == user_id), None)
@@ -848,7 +898,9 @@ async def handle_room_message(message: types.Message):
                             logger.error(f"Failed to send chat message to user {pid}: {e}")
                 room['last_activity'] = time.time()
                 save_rooms()
+                logger.info(f"Chat message in room {token}: {msg}")
                 return
+        logger.info(f"User {user_id} not in any room for room message handler")
         await message.reply("Ви не перебуваєте в жодній кімнаті. Створіть (/create) або приєднайтесь (/join).")
     except Exception as e:
         logger.error(f"Handle room message error: {e}", exc_info=True)
@@ -863,8 +915,8 @@ async def end_game(token):
             return
         if room.get('timer_task') and not room['timer_task'].done():
             room['timer_task'].cancel()
-        spy_username = next(username for pid, username, _ in room['participants'] if pid == room['spy']) if room['spy'] else "Невідомо"
-        spy_callsign = next(callsign for pid, _, callsign in room['participants'] if pid == room['spy']) if room['spy'] else "Невідомо"
+        spy_username = next((username for pid, username, _ in room['participants'] if pid == room['spy']), "Невідомо")
+        spy_callsign = next((callsign for pid, _, callsign in room['participants'] if pid == room['spy']), "Невідомо")
         result = (
             f"Гра завершена! Шпигун: {spy_username} ({spy_callsign})\n"
             f"Локація: {room['location']}\n"
@@ -896,6 +948,7 @@ async def end_game(token):
         room['spy_guess'] = None
         room['participants'] = [(pid, username, None) for pid, username, _ in room['participants']]  # Скидаємо позивні
         save_rooms()
+        logger.info(f"Game ended in room {token}")
     except Exception as e:
         logger.error(f"End game error in room {token}: {e}", exc_info=True)
 
@@ -933,7 +986,9 @@ async def on_startup(_):
         webhook_host = os.getenv('RENDER_EXTERNAL_HOSTNAME')
         logger.info(f"RENDER_EXTERNAL_HOSTNAME: {webhook_host}")
         if not webhook_host:
-            raise ValueError("RENDER_EXTERNAL_HOSTNAME is not set")
+            logger.warning("RENDER_EXTERNAL_HOSTNAME not set, falling back to polling")
+            asyncio.create_task(start_polling())
+            return
         webhook_url = f"https://{webhook_host}/webhook"
         logger.info(f"Setting webhook: {webhook_url}")
         await set_webhook_with_retry(webhook_url)
