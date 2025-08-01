@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand, BotCommandScopeChat
 from aiogram.fsm.context import FSMContext
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
@@ -315,7 +315,7 @@ async def join_room(message: types.Message, state: FSMContext):
     logger.info(f"User {user_id} prompted for room token")
 
 # Обробка токена
-@dp.message(lambda message: message.text, state="waiting_for_token")
+@dp.message(StateFilter("waiting_for_token"))
 async def process_token(message: types.Message, state: FSMContext):
     if await check_maintenance(message):
         await state.clear()
@@ -822,7 +822,7 @@ async def process_voting_results(token):
             await end_game(token)
 
 # Обробка вгадування локації шпигуном
-@dp.message(lambda message: message.text, state="waiting_for_spy_guess")
+@dp.message(StateFilter("waiting_for_spy_guess"))
 async def handle_spy_guess(message: types.Message, state: FSMContext):
     try:
         user_id = message.from_user.id
