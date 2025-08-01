@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.filters import Command, RegexpCommandsFilter
+from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand, BotCommandScopeChat
 from aiogram.fsm.context import FSMContext
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
@@ -35,7 +35,6 @@ dp = Dispatcher(bot=bot, storage=storage)
 # Глобальні змінні
 maintenance_mode = False
 active_users = set()
-polling_started = False  # Захист від повторного polling
 LOCATIONS = [
     "Аеропорт", "Банк", "Пляж", "Казино", "Цирк", "Школа", "Лікарня",
     "Готель", "Музей", "Ресторан", "Театр", "Парк", "Космічна станція",
@@ -358,8 +357,9 @@ async def leave_room(message: types.Message):
     active_users.add(message.from_user.id)
     user_id = message.from_user.id
     username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
-    logger.info(f"User {user_id} sent /leave")
+    logger.info(f"User {user_id} sent /leave, checking rooms: {list(rooms.keys())}")
     for token, room in list(rooms.items()):
+        logger.info(f"Room {token} participants: {[p[0] for p in room['participants']]}")
         if user_id in [p[0] for p in room['participants']]:
             room['participants'] = [p for p in room['participants'] if p[0] != user_id]
             room['last_activity'] = time.time()
@@ -854,8 +854,9 @@ async def handle_room_message(message: types.Message, state: FSMContext):
         user_id = message.from_user.id
         username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
         username_clean = username.lstrip('@')
-        logger.info(f"User {user_id} sent message in room handler: {message.text}")
+        logger.info(f"User {user_id} sent message in room handler: {message.text}, available rooms: {list(rooms.keys())}")
         for token, room in rooms.items():
+            logger.info(f"Checking room {token} for user {user_id}, participants: {[p[0] for p in room['participants']]}")
             if user_id in [p[0] for p in room['participants']]:
                 callsign = next((c for p, u, c in room['participants'] if p == user_id), None)
                 if room['game_started'] or room['last_minute_chat']:
@@ -935,6 +936,7 @@ async def end_game(token):
 )
 async def set_webhook_with_retry(webhook_url):
     logger.info(f"Attempting to set webhook: {webhook_url}")
+    await bot.delete_webhook(drop_pending_updates=True)
     await bot.set_webhook(webhook_url, drop_pending_updates=True, max_connections=100)
     webhook_info = await bot.get_webhook_info()
     logger.info(f"Webhook set, current info: {webhook_info}")
@@ -942,37 +944,26 @@ async def set_webhook_with_retry(webhook_url):
         raise aiohttp.ClientError("Webhook URL is still empty after setting")
     logger.info(f"Webhook successfully set to {webhook_url}")
 
-# Резервний polling
-async def start_polling():
-    global polling_started
-    if polling_started:
-        logger.warning("Polling already started, skipping")
-        return
-    polling_started = True
-    try:
-        logger.info(f"Starting polling for bot {bot.id}")
-        await dp.start_polling(bot, handle_signals=False)
-    except Exception as e:
-        logger.error(f"Polling failed for bot {bot.id}: {e}", exc_info=True)
-        polling_started = False
-        await asyncio.sleep(10)
-        await start_polling()
-
 # Налаштування запуску
 async def on_startup(_):
     try:
         logger.info("Starting bot initialization")
         load_rooms()
-        await bot.delete_webhook(drop_pending_updates=True)
-        logger.info("Webhook deleted, starting polling")
-        asyncio.create_task(start_polling())
+        webhook_host = os.getenv('RENDER_EXTERNAL_HOSTNAME')
+        if not webhook_host:
+            raise ValueError("RENDER_EXTERNAL_HOSTNAME not set")
+        webhook_url = f"https://{webhook_host}/webhook"
+        await set_webhook_with_retry(webhook_url)
         asyncio.create_task(cleanup_rooms())
         asyncio.create_task(keep_alive())
         logger.info("Cleanup rooms and keep-alive tasks started")
         logger.info("Bot initialization completed")
+        # Перевірка стану webhook після встановлення
+        webhook_info = await bot.get_webhook_info()
+        logger.info(f"Webhook status after startup: {webhook_info}")
     except Exception as e:
         logger.error(f"Startup failed: {e}", exc_info=True)
-        asyncio.create_task(start_polling())
+        raise
 
 async def on_shutdown(_):
     try:
