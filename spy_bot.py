@@ -4,10 +4,12 @@ import random
 import os
 import json
 import time
+import sys
 import psutil
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
+import aiogram
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.filters import Command, StateFilter
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand, BotCommandScopeChat
@@ -927,7 +929,7 @@ async def handle_room_message(message: types.Message, state: FSMContext):
         await message.reply("Ви не перебуваєте в жодній кімнаті. Створіть (/create) або приєднайтесь (/join).")
     except Exception as e:
         logger.error(f"Handle room message error: {e}", exc_info=True)
-        await message.reply("Виникла помилка при обробці повідомлення.")
+        await message.reply("Помилка при обробці повідомлення.")
 
 async def end_game(token):
     try:
