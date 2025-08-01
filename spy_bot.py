@@ -19,7 +19,7 @@ import aiohttp
 import tenacity
 
 # Налаштування логування
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Завантажуємо змінні з .env
@@ -29,6 +29,7 @@ if not API_TOKEN:
     raise ValueError("BOT_TOKEN is not set in environment variables")
 ADMIN_ID = int(os.getenv('ADMIN_ID', '5280737551'))
 USE_POLLING = os.getenv('USE_POLLING', 'false').lower() == 'true'
+RENDER_EXTERNAL_HOSTNAME = os.getenv('RENDER_EXTERNAL_HOSTNAME', 'spy-game-bot.onrender.com')
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(bot=bot, storage=storage)
@@ -61,7 +62,7 @@ logger.info(f"Using aiohttp version: {aiohttp.__version__}")
 process = psutil.Process()
 logger.info(f"Initial memory usage: {process.memory_info().rss / 1024 / 1024:.2f} MB")
 
-# Функції для роботи з rooms (save_rooms, load_rooms, cleanup_rooms, keep_alive, health_check) без змін
+# Функції для роботи з rooms
 def save_rooms():
     global last_save_time
     current_time = time.time()
@@ -131,7 +132,7 @@ async def keep_alive():
     async with ClientSession() as session:
         while True:
             try:
-                webhook_host = os.getenv('RENDER_EXTERNAL_HOSTNAME')
+                webhook_host = os.getenv('RENDER_EXTERNAL_HOSTNAME', 'spy-game-bot.onrender.com')
                 logger.info(f"Sending keep-alive ping to https://{webhook_host}/health")
                 async with session.get(f"https://{webhook_host}/health") as resp:
                     logger.info(f"Keep-alive ping response: {resp.status}")
@@ -145,10 +146,25 @@ async def health_check(request):
         info = await bot.get_webhook_info()
         memory_usage = process.memory_info().rss / 1024 / 1024
         logger.info(f"Webhook status: {info}, Memory usage: {memory_usage:.2f} MB")
-        return web.Response(text="OK", status=200)
+        return web.Response(text=f"OK\nWebhook: {info}", status=200)
     except Exception as e:
         logger.error(f"Health check error: {e}", exc_info=True)
-        return web.Response(text="ERROR", status=500)
+        return web.Response(text=f"ERROR: {e}", status=500)
+
+async def check_webhook_periodically():
+    while True:
+        try:
+            webhook_host = os.getenv('RENDER_EXTERNAL_HOSTNAME', 'spy-game-bot.onrender.com')
+            webhook_url = f"https://{webhook_host}/webhook"
+            info = await bot.get_webhook_info()
+            logger.info(f"Periodic webhook check: {info}")
+            if not info.url or info.url != webhook_url:
+                logger.warning(f"Webhook is not set or incorrect. Current: {info.url}, Expected: {webhook_url}")
+                await set_webhook_with_retry(webhook_url)
+            await asyncio.sleep(600)  # Перевіряємо кожні 10 хвилин
+        except Exception as e:
+            logger.error(f"Periodic webhook check failed: {e}", exc_info=True)
+            await asyncio.sleep(600)
 
 # Перевірка техобслуговування
 async def check_maintenance(message: types.Message):
@@ -294,7 +310,9 @@ async def create_room(message: types.Message):
         'last_activity': time.time(),
         'last_minute_chat': False,
         'waiting_for_spy_guess': False,
-        'spy_guess': None
+        'spy_guess': None,
+        'votes_for': 0,
+        'votes_against': 0
     }
     save_rooms()
     logger.info(f"Room created: {room_token}, rooms: {list(rooms.keys())}")
@@ -429,6 +447,8 @@ async def start_game(message: types.Message):
             room['voters'] = set()
             room['waiting_for_spy_guess'] = False
             room['spy_guess'] = None
+            room['votes_for'] = 0
+            room['votes_against'] = 0
             room['last_activity'] = time.time()
             save_rooms()
             logger.info(f"Game started in room {token}, spy: {room['spy']}, location: {room['location']}")
@@ -914,6 +934,8 @@ async def end_game(token):
         room['last_minute_chat'] = False
         room['waiting_for_spy_guess'] = False
         room['spy_guess'] = None
+        room['votes_for'] = 0
+        room['votes_against'] = 0
         room['participants'] = [(pid, username, None) for pid, username, _ in room['participants']]
         save_rooms()
         logger.info(f"Game ended in room {token}")
@@ -921,15 +943,15 @@ async def end_game(token):
         logger.error(f"End game error in room {token}: {e}", exc_info=True)
 
 @tenacity.retry(
-    stop=tenacity.stop_after_attempt(5),
-    wait=tenacity.wait_exponential(multiplier=1, min=4, max=30),
+    stop=tenacity.stop_after_attempt(10),
+    wait=tenacity.wait_exponential(multiplier=2, min=5, max=60),
     retry=tenacity.retry_if_exception_type(aiohttp.ClientError),
     before_sleep=lambda retry_state: logger.info(f"Retrying webhook setup, attempt {retry_state.attempt_number}")
 )
 async def set_webhook_with_retry(webhook_url):
     logger.info(f"Attempting to set webhook: {webhook_url}")
     await bot.delete_webhook(drop_pending_updates=True)
-    await bot.set_webhook(webhook_url, drop_pending_updates=True, max_connections=100)
+    await bot.set_webhook(webhook_url, drop_pending_updates=True, max_connections=100, timeout=30)
     webhook_info = await bot.get_webhook_info()
     logger.info(f"Webhook set, current info: {webhook_info}")
     if not webhook_info.url:
@@ -946,13 +968,12 @@ async def on_startup(_):
             await bot.delete_webhook(drop_pending_updates=True)
             asyncio.create_task(cleanup_rooms())
         else:
-            webhook_host = os.getenv('RENDER_EXTERNAL_HOSTNAME')
-            if not webhook_host:
-                raise ValueError("RENDER_EXTERNAL_HOSTNAME not set")
-            webhook_url = f"https://{webhook_host}/webhook"
+            webhook_url = f"https://{RENDER_EXTERNAL_HOSTNAME}/webhook"
+            logger.info(f"Setting up webhook: {webhook_url}")
             await set_webhook_with_retry(webhook_url)
             asyncio.create_task(cleanup_rooms())
             asyncio.create_task(keep_alive())
+            asyncio.create_task(check_webhook_periodically())
         logger.info("Bot initialization completed")
         webhook_info = await bot.get_webhook_info()
         logger.info(f"Webhook status after startup: {webhook_info}")
