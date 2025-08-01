@@ -968,10 +968,10 @@ async def set_webhook_with_retry(webhook_url):
 # Резервний polling
 async def start_polling():
     try:
-        logger.info("Starting polling as fallback")
+        logger.info(f"Starting polling for bot {bot.id}")
         await dp.start_polling(bot, handle_signals=False)
     except Exception as e:
-        logger.error(f"Polling failed: {e}", exc_info=True)
+        logger.error(f"Polling failed for bot {bot.id}: {e}", exc_info=True)
         await asyncio.sleep(10)
         await start_polling()
 
@@ -980,7 +980,8 @@ async def on_startup(_):
     try:
         logger.info("Starting bot initialization")
         load_rooms()
-        logger.info("Forcing polling mode for debugging")
+        await bot.delete_webhook(drop_pending_updates=True)
+        logger.info("Webhook deleted, starting polling")
         asyncio.create_task(start_polling())
         asyncio.create_task(cleanup_rooms())
         asyncio.create_task(keep_alive())
@@ -1012,6 +1013,8 @@ class CustomRequestHandler(SimpleRequestHandler):
         try:
             data = await request.json()
             logger.info(f"Webhook data received: {data}")
+            update = types.Update(**data)
+            logger.info(f"Processed update: {update}")
             response = await super().post(request)
             logger.info(f"Webhook response: {response.status}")
             return response
