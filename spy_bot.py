@@ -845,7 +845,7 @@ async def handle_spy_guess(message: types.Message, state: FSMContext):
         await state.clear()
 
 # Чат у кімнаті
-@dp.message(lambda message: message.text)
+@dp.message()
 async def handle_room_message(message: types.Message, state: FSMContext):
     try:
         if await check_maintenance(message):
@@ -989,9 +989,8 @@ class CustomRequestHandler(SimpleRequestHandler):
             logger.info(f"Webhook data received: {data}")
             update = types.Update(**data)
             logger.info(f"Processed update: {update}")
-            response = await super().post(request)
-            logger.info(f"Webhook response: {response.status}")
-            return response
+            await dp.feed_update(bot, update)  # Явно передаємо апдейт
+            return web.Response(status=200)
         except Exception as e:
             logger.error(f"Webhook processing error: {e}", exc_info=True)
             return web.Response(status=500)
