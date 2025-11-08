@@ -153,19 +153,20 @@ async def health_check(request):
         return web.Response(text=f"ERROR: {e}", status=500)
 
 async def check_webhook_periodically():
+    await asyncio.sleep(20) # Дамо боту запуститися перед першою перевіркою
     while True:
         try:
             webhook_host = os.getenv('RENDER_EXTERNAL_HOSTNAME', 'spy-game-bot.onrender.com')
             webhook_url = f"https://{webhook_host}/webhook"
             info = await bot.get_webhook_info()
-            logger.info(f"Periodic webhook check: {info}")
+            logger.info(f"Periodic webhook check: {info.url}") # Скорочений лог
             if not info.url or info.url != webhook_url:
-                logger.warning(f"Webhook is not set or incorrect. Current: {info.url}, Expected: {webhook_url}")
+                logger.warning(f"Webhook is NOT SET or incorrect. Re-setting! Current: {info.url}, Expected: {webhook_url}")
                 await set_webhook_with_retry(webhook_url)
-            await asyncio.sleep(600)  # Перевіряємо кожні 10 хвилин
+            await asyncio.sleep(120)  # Перевіряємо кожні 2 хвилини
         except Exception as e:
             logger.error(f"Periodic webhook check failed: {e}", exc_info=True)
-            await asyncio.sleep(600)
+            await asyncio.sleep(120) # Повторити спробу через 2 хвилини
 
 # Перевірка техобслуговування
 async def check_maintenance(message: types.Message):
@@ -1289,9 +1290,11 @@ async def on_shutdown(_):
         for token, room in list(rooms.items()):
             if room.get('timer_task') and not room['timer_task'].done():
                 room['timer_task'].cancel()
-        await bot.delete_webhook(drop_pending_updates=True)
+        
+        # Ми більше не видаляємо webhook тут, щоб уникнути "гонки станів"
+        
         await bot.session.close()
-        logger.info("Bot shutdown successfully")
+        logger.info("Bot session closed. Shutdown successful.")
     except Exception as e:
         logger.error(f"Shutdown failed: {e}", exc_info=True)
 
