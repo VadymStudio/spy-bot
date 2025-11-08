@@ -1047,7 +1047,7 @@ async def end_game(token):
 async def set_webhook_with_retry(webhook_url):
     logger.info(f"Attempting to set webhook: {webhook_url}")
     await bot.delete_webhook(drop_pending_updates=True)
-    await bot.set_webhook(webhook_url, drop_pending_updates=True, max_connections=100, timeout=30)
+    await bot.set_webhook(webhook_url, drop_pending_updates=True, max_connections=100, request_timeout=30)
     webhook_info = await bot.get_webhook_info()
     logger.info(f"Webhook set, current info: {webhook_info}")
     if not webhook_info.url:
