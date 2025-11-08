@@ -768,54 +768,119 @@ async def process_voting_results(token):
         logger.info(f"process_voting_results: Suspected players: {suspected}, Spy: {room['spy']}")
         spy_username = next((username for pid, username, _ in room['participants'] if pid == room['spy']), "Невідомо")
         spy_callsign = next((callsign for pid, _, callsign in room['participants'] if pid == room['spy']), "Невідомо")
+        
+        # --- ПОЧАТОК ЗМІНЕНОГО БЛОКУ ---
+        
         if len(suspected) == 1 and suspected[0] == room['spy']:
-            room['waiting_for_spy_guess'] = True
-            room['spy_guess'] = None
-            room['last_activity'] = time.time()
-            save_rooms()
-            logger.info(f"Spy {room['spy']} detected in room {token}, waiting for guess")
-            for pid, _, _ in room['participants']:
-                try:
-                    if pid == room['spy']:
-                        await bot.send_message(pid, "Гравці проголосували за вас! Назвіть локацію (30 секунд):")
-                    else:
-                        await bot.send_message(pid, f"Гравці вважають, що шпигун — {spy_username} ({spy_callsign}). Чекаємо, чи вгадає він локацію (30 секунд).")
-                except Exception as e:
-                    logger.error(f"Failed to send spy guess prompt to user {pid}: {e}")
-            for i in range(30, 0, -1):
-                if token not in rooms or not rooms[token]['waiting_for_spy_guess']:
-                    return
-                if i <= 10:
+            
+            # Якщо ми ще не відправили кнопки (перший захід)
+            if not room.get('waiting_for_spy_guess') and room.get('spy_guess') is None:
+                room['waiting_for_spy_guess'] = True
+                room['spy_guess'] = None # Скидаємо минулу спробу, якщо є
+                room['last_activity'] = time.time()
+                
+                # --- Генеруємо кнопки ---
+                correct_location = room['location']
+                # Беремо 5 випадкових неправильних локацій
+                wrong_locations = [loc for loc in LOCATIONS if loc != correct_location]
+                random.shuffle(wrong_locations)
+                options = wrong_locations[:5] 
+                options.append(correct_location)
+                # Перемішуємо правильну відповідь з неправильними
+                random.shuffle(options)
+
+                keyboard_buttons = []
+                for location in options:
+                    # Увага: переконуємось, що дані не довші за 64 байти
+                    # Формат: spy_guess_TOKEN_ЛОКАЦІЯ
+                    callback_data = f"spy_guess_{token}_{location}"
+                    if len(callback_data.encode('utf-8')) > 64:
+                        logger.warning(f"Callback data too long, skipping: {callback_data}")
+                        continue # Пропускаємо занадто довгі назви (якщо є)
+                    keyboard_buttons.append([InlineKeyboardButton(text=location, callback_data=callback_data)])
+                
+                reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+                # -------------------------
+
+                save_rooms()
+                logger.info(f"Spy {room['spy']} detected in room {token}, sending guess options")
+                
+                for pid, _, _ in room['participants']:
+                    try:
+                        if pid == room['spy']:
+                            await bot.send_message(pid, "Гравці проголосували за вас! Вгадайте локацію (30 секунд):", reply_markup=reply_markup)
+                        else:
+                            await bot.send_message(pid, f"Гравці вважають, що шпигун — {spy_username} ({spy_callsign}). Чекаємо, чи вгадає він локацію (30 секунд).")
+                    except Exception as e:
+                        logger.error(f"Failed to send spy guess prompt to user {pid}: {e}")
+                
+                # Запускаємо 30-секундний таймер на вгадування
+                for i in range(30, 0, -1):
+                    if token not in rooms: return # Кімнату видалили
+                    room = rooms.get(token)
+                    if not room: return
+                    # Якщо шпигун вгадав (змінив 'waiting_for_spy_guess' на False), виходимо з таймера
+                    if not room['waiting_for_spy_guess']: 
+                        return # Результат вже обробляється в process_spy_guess_callback
+
+                    if i <= 10:
+                        for pid, _, _ in room['participants']:
+                            try:
+                                await bot.send_message(pid, f"Час для вгадування локації: {i} секунд")
+                            except Exception as e:
+                                logger.error(f"Failed to send spy guess timer to user {pid}: {e}")
+                    await asyncio.sleep(1)
+                
+                # Якщо ми дійшли сюди, 30 секунд вийшло, а шпигун не відповів
+                room = rooms.get(token)
+                if not room: return
+                
+                if room['waiting_for_spy_guess']: # Перевіряємо, чи він ще не відповів
+                    room['waiting_for_spy_guess'] = False
+                    room['last_activity'] = time.time()
+                    save_rooms()
+                    logger.info(f"Spy {room['spy']} timed out in room {token}")
+                    # Шпигун не вгадав (час вийшов)
+                    result = (
+                        f"Гра завершена! Шпигун: {spy_username} ({spy_callsign})\n"
+                        f"Локація: {room['location']}\n"
+                        f"Час на вгадування вийшов! Шпигун не вгадав локацію. Гравці перемогли!"
+                    )
                     for pid, _, _ in room['participants']:
                         try:
-                            await bot.send_message(pid, f"Час для вгадування локації: {i} секунд")
+                            await bot.send_message(pid, result)
                         except Exception as e:
-                            logger.error(f"Failed to send spy guess timer to user {pid}: {e}")
-                await asyncio.sleep(1)
-            room = rooms.get(token)
-            if not room:
-                return
-            room['waiting_for_spy_guess'] = False
-            room['last_activity'] = time.time()
-            spy_guess = room.get('spy_guess', '').lower().strip()
-            logger.info(f"Spy guess in room {token}: {spy_guess}, Actual location: {room['location']}")
-            if spy_guess == room['location'].lower():
-                result = (
-                    f"Гра завершена! Шпигун: {spy_username} ({spy_callsign})\n"
-                    f"Локація: {room['location']}\n"
-                    f"Шпигун вгадав локацію! Шпигун переміг!"
-                )
-            else:
-                result = (
-                    f"Гра завершена! Шпигун: {spy_username} ({spy_callsign})\n"
-                    f"Локація: {room['location']}\n"
-                    f"Шпигун не вгадав локацію. Гравці перемогли!"
-                )
-            for pid, _, _ in room['participants']:
-                try:
-                    await bot.send_message(pid, result)
-                except Exception as e:
-                    logger.error(f"Failed to send game result to user {pid}: {e}")
+                            logger.error(f"Failed to send game result to user {pid}: {e}")
+                    await end_game(token) # Завершуємо гру
+            
+            # Сюди ми потрапляємо, коли шпигун вже натиснув кнопку
+            # і 'process_spy_guess_callback' викликав нас знову
+            elif not room.get('waiting_for_spy_guess') and room.get('spy_guess') is not None:
+                spy_guess = room.get('spy_guess', '').lower().strip()
+                logger.info(f"Spy guess in room {token}: {spy_guess}, Actual location: {room['location']}")
+                
+                if spy_guess == room['location'].lower():
+                    result = (
+                        f"Гра завершена! Шпигун: {spy_username} ({spy_callsign})\n"
+                        f"Локація: {room['location']}\n"
+                        f"Шпигун вгадав локацію! Шпигун переміг!"
+                    )
+                else:
+                    result = (
+                        f"Гра завершена! Шпигун: {spy_username} ({spy_callsign})\n"
+                        f"Локація: {room['location']}\n"
+                        f"Шпигун не вгадав локацію ({spy_guess}). Гравці перемогли!"
+                    )
+                
+                for pid, _, _ in room['participants']:
+                    try:
+                        await bot.send_message(pid, result)
+                    except Exception as e:
+                        logger.error(f"Failed to send game result to user {pid}: {e}")
+                
+                await end_game(token) # Завершуємо гру
+
+        # Це стара логіка, якщо шпигуна НЕ вгадали
         else:
             result = (
                 f"Гра завершена! Шпигун: {spy_username} ({spy_callsign})\n"
@@ -827,8 +892,10 @@ async def process_voting_results(token):
                     await bot.send_message(pid, result)
                 except Exception as e:
                     logger.error(f"Failed to send game result to user {pid}: {e}")
-        room['last_activity'] = time.time()
-        await end_game(token)
+            await end_game(token)
+            
+        # --- КІНЕЦЬ ЗМІНЕНОГО БЛОКУ ---
+            
     except Exception as e:
         logger.error(f"Process voting results error in room {token}: {e}", exc_info=True)
         room = rooms.get(token)
@@ -837,27 +904,56 @@ async def process_voting_results(token):
             room['last_activity'] = time.time()
             await end_game(token)
 
-@dp.message(StateFilter("waiting_for_spy_guess"))
-async def handle_spy_guess(message: types.Message, state: FSMContext):
+# --- ПОЧАТОК НОВОЇ ФУНКЦІЇ ---
+
+@dp.callback_query(lambda c: c.data.startswith('spy_guess_'))
+async def process_spy_guess_callback(callback_query: types.CallbackQuery):
     try:
-        user_id = message.from_user.id
-        logger.info(f"User {user_id} sent spy guess: {message.text}")
-        for token, room in rooms.items():
-            if user_id in [p[0] for p in room['participants']]:
-                if room['waiting_for_spy_guess'] and user_id == room['spy']:
-                    room['spy_guess'] = message.text.strip()
-                    room['waiting_for_spy_guess'] = False
-                    room['last_activity'] = time.time()
-                    save_rooms()
-                    logger.info(f"Spy {user_id} guessed location in room {token}: {message.text}")
-                    await process_voting_results(token)
-                    await state.clear()
-                    return
-        logger.info(f"User {user_id} not in spy guess state or not spy")
+        user_id = callback_query.from_user.id
+        # Розбиваємо дані: spy_guess_TOKEN_ЛОКАЦІЯ
+        data_parts = callback_query.data.split('_', 2) 
+        if len(data_parts) != 3:
+            logger.warning(f"Invalid spy guess callback data: {callback_query.data}")
+            await callback_query.answer("Помилка даних.")
+            return
+
+        token = data_parts[1]
+        guessed_location = data_parts[2]
+        
+        room = rooms.get(token)
+        
+        # Перевірки
+        if not room or user_id != room.get('spy'):
+            await callback_query.answer("Це не ваша гра або ви не шпигун!")
+            return
+        
+        if not room.get('waiting_for_spy_guess'):
+            await callback_query.answer("Час на вгадування вийшов!")
+            return
+        
+        # Все добре, ми отримали відповідь
+        room['spy_guess'] = guessed_location.strip()
+        room['waiting_for_spy_guess'] = False # Зупиняємо очікування
+        room['last_activity'] = time.time()
+        save_rooms()
+        
+        await callback_query.answer(f"Ваш вибір: {guessed_location}")
+        # Прибираємо кнопки
+        try:
+            await callback_query.message.edit_text(f"Шпигун зробив свій вибір: {guessed_location}")
+        except Exception as e:
+            logger.info(f"Couldn't edit spy guess message: {e}")
+
+        # Тепер запускаємо фінальну обробку результатів
+        await process_voting_results(token)
+
     except Exception as e:
-        logger.error(f"Handle spy guess error: {e}", exc_info=True)
-        await message.reply("Виникла помилка при обробці повідомлення.")
-        await state.clear()
+        logger.error(f"Process spy guess callback error: {e}", exc_info=True)
+        await callback_query.answer("Помилка під час вибору!")
+
+# --- КІНЕЦЬ НОВОЇ ФУНКЦІЇ ---
+
+# --- ВИДАЛЕНО ФУНКЦІЮ handle_spy_guess ---
 
 @dp.message()
 async def handle_room_message(message: types.Message, state: FSMContext):
