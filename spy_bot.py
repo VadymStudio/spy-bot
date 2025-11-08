@@ -99,6 +99,7 @@ def load_rooms():
                     room['last_activity'] = time.time()
                     room['last_minute_chat'] = room.get('last_minute_chat', False)
                     room['waiting_for_spy_guess'] = room.get('waiting_for_spy_guess', False)
+                    room['is_test_game'] = room.get('is_test_game', False) # Додаємо прапорець
                 logger.info("Rooms loaded from rooms.json")
     except Exception as e:
         logger.error(f"Failed to load rooms: {e}", exc_info=True)
@@ -189,10 +190,11 @@ async def maintenance_on(message: types.Message):
     rooms.clear()
     save_rooms()
     for user_id in active_users:
-        try:
-            await bot.send_message(user_id, "Увага! Бот переходить на технічне обслуговування. Усі ігри завершено.")
-        except Exception as e:
-            logger.error(f"Failed to send maintenance_on message to {user_id}: {e}")
+        if user_id > 0: # Не надсилаємо ботам
+            try:
+                await bot.send_message(user_id, "Увага! Бот переходить на технічне обслуговування. Усі ігри завершено.")
+            except Exception as e:
+                logger.error(f"Failed to send maintenance_on message to {user_id}: {e}")
     await message.reply("Технічне обслуговування увімкнено.")
 
 @dp.message(Command("maintenance_off"))
@@ -204,10 +206,11 @@ async def maintenance_off(message: types.Message):
     maintenance_mode = False
     active_users.add(message.from_user.id)
     for user_id in active_users:
-        try:
-            await bot.send_message(user_id, "Технічне обслуговування завершено! Бот знову доступний для гри.")
-        except Exception as e:
-            logger.error(f"Failed to send maintenance_off message to {user_id}: {e}")
+        if user_id > 0: # Не надсилаємо ботам
+            try:
+                await bot.send_message(user_id, "Технічне обслуговування завершено! Бот знову доступний для гри.")
+            except Exception as e:
+                logger.error(f"Failed to send maintenance_off message to {user_id}: {e}")
     await message.reply("Технічне обслуговування вимкнено.")
 
 @dp.message(Command("check_webhook"))
@@ -233,6 +236,97 @@ async def reset_state(message: types.Message, state: FSMContext):
         logger.error(f"Failed to reset FSM state: {e}", exc_info=True)
         await message.reply("Помилка при скиданні стану.")
 
+# --- НОВА АДМІН-КОМАНДА ДЛЯ ТЕСТУВАННЯ ---
+@dp.message(Command("testgame"))
+async def test_game(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.reply("Ви не адміністратор!")
+        return
+    if await check_maintenance(message):
+        return
+    
+    user_id = message.from_user.id
+    username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
+    logger.info(f"Admin {user_id} starting test game")
+
+    # Перевіряємо, чи адмін вже в кімнаті
+    for token, room in list(rooms.items()):
+        if user_id in [p[0] for p in room['participants']]:
+            await message.reply("Ви вже в кімнаті! Спочатку покиньте її (/leave).")
+            return
+
+    room_token = f"test_{uuid.uuid4().hex[:4]}" # Створюємо унікальний тестовий токен
+    
+    # Створюємо учасників: адмін + 3 боти (з негативними ID)
+    participants = [
+        (user_id, username, None),
+        (-1, "Бот Василь", None),
+        (-2, "Бот Степан", None),
+        (-3, "Бот Галина", None)
+    ]
+    
+    rooms[room_token] = {
+        'owner': user_id,
+        'participants': participants,
+        'game_started': False,
+        'is_test_game': True, # Головний прапорець
+        'spy': None,
+        'location': None,
+        'messages': [],
+        'votes': {},
+        'banned_from_voting': set(),
+        'vote_in_progress': False,
+        'voters': set(),
+        'timer_task': None,
+        'last_activity': time.time(),
+        'last_minute_chat': False,
+        'waiting_for_spy_guess': False,
+        'spy_guess': None,
+        'votes_for': 0,
+        'votes_against': 0
+    }
+    
+    room = rooms[room_token]
+    
+    # --- Логіка, скопійована з /startgame ---
+    available_callsigns = CALLSIGNS.copy()
+    random.shuffle(available_callsigns)
+    room['participants'] = [(pid, uname, available_callsigns[i]) for i, (pid, uname, _) in enumerate(room['participants'])]
+    
+    room['game_started'] = True
+    room['location'] = random.choice(LOCATIONS)
+    
+    # Адмін може обрати себе шпигуном: /testgame spy
+    make_admin_spy = 'spy' in message.text.lower()
+    participant_ids = [p[0] for p in room['participants']]
+    
+    if make_admin_spy:
+        room['spy'] = user_id
+        logger.info(f"Test game {room_token}: Admin is spy.")
+    else:
+        bot_ids = [pid for pid in participant_ids if pid < 0]
+        room['spy'] = random.choice(bot_ids)
+        logger.info(f"Test game {room_token}: Bot {room['spy']} is spy.")
+
+    room['last_activity'] = time.time()
+    save_rooms()
+    
+    logger.info(f"Test game started in room {room_token}, spy: {room['spy']}, location: {room['location']}")
+
+    # Надсилаємо роль тільки адміну
+    admin_callsign = next(c for p, u, c in room['participants'] if p == user_id)
+    if user_id == room['spy']:
+        await bot.send_message(user_id, f"ТЕСТОВА ГРА.\nВи ШПИГУН ({admin_callsign})!\nЛокація: {room['location']} (ви її бачите для тесту).\nБоти проголосують за 1 хв.")
+    else:
+        await bot.send_message(user_id, f"ТЕСТОВА ГРА.\nЛокація: {room['location']}\nВи {admin_callsign}. Боти проголосують за 1 хв.")
+
+    await message.reply(f"Тестову кімнату створено: {room_token}\nШпигун: {room['spy']}\nЛокація: {room['location']}")
+    
+    # Запускаємо таймер
+    room['timer_task'] = asyncio.create_task(run_timer(room_token))
+
+# --- Кінець нової команди ---
+
 # Команди гри
 @dp.message(Command("start"))
 async def send_welcome(message: types.Message):
@@ -257,7 +351,9 @@ async def send_welcome(message: types.Message):
             "Команди адміністратора:\n"
             "/maintenance_on - Увімкнути технічне обслуговування\n"
             "/maintenance_off - Вимкнути технічне обслуговування\n"
-            "/check_webhook - Перевірити стан webhook"
+            "/check_webhook - Перевірити стан webhook\n"
+            "/testgame - Запустити тестову гру з ботами\n"
+            "/testgame spy - Запустити тестову гру, де ви шпигун"
         )
 
 @dp.message(Command("create"))
@@ -278,10 +374,11 @@ async def create_room(message: types.Message):
             logger.info(f"User {user_id} left room {token}")
             await message.reply(f"Ви покинули кімнату {token}.")
             for pid, _, _ in room['participants']:
-                try:
-                    await bot.send_message(pid, f"Гравець {username} покинув кімнату {token}.")
-                except Exception as e:
-                    logger.error(f"Failed to notify user {pid} about leave: {e}")
+                if pid > 0: # Додано перевірку
+                    try:
+                        await bot.send_message(pid, f"Гравець {username} покинув кімнату {token}.")
+                    except Exception as e:
+                        logger.error(f"Failed to notify user {pid} about leave: {e}")
             if not room['participants']:
                 del rooms[token]
                 logger.info(f"Room {token} deleted (empty)")
@@ -289,16 +386,18 @@ async def create_room(message: types.Message):
                 del rooms[token]
                 logger.info(f"Room {token} deleted (owner left)")
                 for pid, _, _ in room['participants']:
-                    try:
-                        await bot.send_message(pid, f"Кімната {token} закрита, бо власник покинув її.")
-                    except Exception as e:
-                        logger.error(f"Failed to notify user {pid} about room closure: {e}")
+                    if pid > 0: # Додано перевірку
+                        try:
+                            await bot.send_message(pid, f"Кімната {token} закрита, бо власник покинув її.")
+                        except Exception as e:
+                            logger.error(f"Failed to notify user {pid} about room closure: {e}")
             save_rooms()
     room_token = str(uuid.uuid4())[:8].lower()
     rooms[room_token] = {
         'owner': user_id,
         'participants': [(user_id, username, None)],
         'game_started': False,
+        'is_test_game': False, # Звичайна гра
         'spy': None,
         'location': None,
         'messages': [],
@@ -348,7 +447,9 @@ async def process_token(message: types.Message, state: FSMContext):
     username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
     logger.info(f"User {user_id} attempting to join room with token: {token}, available rooms: {list(rooms.keys())}")
     if token in rooms:
-        if rooms[token]['game_started']:
+        if rooms[token].get('is_test_game', False):
+             await message.reply("Це тестова кімната, до неї не можна приєднатися.")
+        elif rooms[token]['game_started']:
             logger.info(f"User {user_id} tried to join active game in room {token}")
             await message.reply("Гра в цій кімнаті вже почалася, ви не можете приєднатися.")
         elif user_id not in [p[0] for p in rooms[token]['participants']]:
@@ -357,7 +458,7 @@ async def process_token(message: types.Message, state: FSMContext):
             save_rooms()
             logger.info(f"User {user_id} ({username}) joined room {token}")
             for pid, _, _ in rooms[token]['participants']:
-                if pid != user_id:
+                if pid != user_id and pid > 0: # Додано перевірку
                     try:
                         await bot.send_message(pid, f"Гравець {username} приєднався до кімнати {token}!")
                     except Exception as e:
@@ -387,25 +488,27 @@ async def leave_room(message: types.Message):
             logger.info(f"User {user_id} left room {token}")
             await message.reply(f"Ви покинули кімнату {token}.")
             for pid, _, _ in room['participants']:
-                try:
-                    await bot.send_message(pid, f"Гравець {username} покинув кімнату {token}.")
-                except Exception as e:
-                    logger.error(f"Failed to notify user {pid} about leave: {e}")
-            if not room['participants']:
+                if pid > 0: # Додано перевірку
+                    try:
+                        await bot.send_message(pid, f"Гравець {username} покинув кімнату {token}.")
+                    except Exception as e:
+                        logger.error(f"Failed to notify user {pid} about leave: {e}")
+            if not room['participants'] or all(p[0] < 0 for p in room['participants']): # Якщо кімната пуста або лишились тільки боти
                 if room.get('timer_task') and not room['timer_task'].done():
                     room['timer_task'].cancel()
                 del rooms[token]
-                logger.info(f"Room {token} deleted (empty)")
+                logger.info(f"Room {token} deleted (empty or only bots left)")
             elif room['owner'] == user_id:
                 if room.get('timer_task') and not room['timer_task'].done():
                     room['timer_task'].cancel()
                 del rooms[token]
                 logger.info(f"Room {token} deleted (owner left)")
                 for pid, _, _ in room['participants']:
-                    try:
-                        await bot.send_message(pid, f"Кімната {token} закрита, бо власник покинув її.")
-                    except Exception as e:
-                        logger.error(f"Failed to notify user {pid} about room closure: {e}")
+                    if pid > 0: # Додано перевірку
+                        try:
+                            await bot.send_message(pid, f"Кімната {token} закрита, бо власник покинув її.")
+                        except Exception as e:
+                            logger.error(f"Failed to notify user {pid} about room closure: {e}")
             save_rooms()
             return
     logger.info(f"User {user_id} not in any room")
@@ -420,6 +523,9 @@ async def start_game(message: types.Message):
     logger.info(f"User {user_id} sent /startgame")
     for token, room in rooms.items():
         if user_id in [p[0] for p in room['participants']]:
+            if room.get('is_test_game', False):
+                await message.reply("Тестова гра вже запущена!")
+                return
             if room['owner'] != user_id:
                 logger.info(f"User {user_id} is not owner of room {token}")
                 await message.reply("Тільки власник може запустити гру!")
@@ -454,23 +560,26 @@ async def start_game(message: types.Message):
             logger.info(f"Game started in room {token}, spy: {room['spy']}, location: {room['location']}")
             commands = [BotCommand(command="early_vote", description="Дострокове завершення гри")]
             for pid, _, _ in room['participants']:
-                try:
-                    await bot.set_my_commands(commands, scope=BotCommandScopeChat(chat_id=pid))
-                except Exception as e:
-                    logger.error(f"Failed to set commands for user {pid}: {e}")
+                if pid > 0: # Додано перевірку
+                    try:
+                        await bot.set_my_commands(commands, scope=BotCommandScopeChat(chat_id=pid))
+                    except Exception as e:
+                        logger.error(f"Failed to set commands for user {pid}: {e}")
             for pid, username, callsign in room['participants']:
-                try:
-                    if pid == room['spy']:
-                        await bot.send_message(pid, f"Ви ШПИГУН ({callsign})! Спробуйте не видати себе.")
-                    else:
-                        await bot.send_message(pid, f"Локація: {room['location']}\nВи {callsign}. Один із гравців — шпигун!")
-                except Exception as e:
-                    logger.error(f"Failed to send start message to user {pid}: {e}")
+                if pid > 0: # Додано перевірку
+                    try:
+                        if pid == room['spy']:
+                            await bot.send_message(pid, f"Ви ШПИГУН ({callsign})! Спробуйте не видати себе.")
+                        else:
+                            await bot.send_message(pid, f"Локація: {room['location']}\nВи {callsign}. Один із гравців — шпигун!")
+                    except Exception as e:
+                        logger.error(f"Failed to send start message to user {pid}: {e}")
             for pid, _, _ in room['participants']:
-                try:
-                    await bot.send_message(pid, "Гра почалася! Спілкуйтеся вільно. Час гри: 20 хвилин.")
-                except Exception as e:
-                    logger.error(f"Failed to send game start message to user {pid}: {e}")
+                if pid > 0: # Додано перевірку
+                    try:
+                        await bot.send_message(pid, "Гра почалася! Спілкуйтеся вільно. Час гри: 20 хвилин.")
+                    except Exception as e:
+                        logger.error(f"Failed to send game start message to user {pid}: {e}")
             room['timer_task'] = asyncio.create_task(run_timer(token))
             return
     logger.info(f"User {user_id} not in any room for /startgame")
@@ -485,6 +594,9 @@ async def early_vote(message: types.Message):
     logger.info(f"User {user_id} sent /early_vote")
     for token, room in rooms.items():
         if user_id in [p[0] for p in room['participants']]:
+            if room.get('is_test_game', False):
+                await message.reply("Ця функція вимкнена у тестових іграх.")
+                return
             if not room['game_started']:
                 logger.info(f"Game not active in room {token}")
                 await message.reply("Гра не активна!")
@@ -515,19 +627,21 @@ async def early_vote(message: types.Message):
                 ]
             ])
             for pid, _, _ in room['participants']:
-                try:
-                    await bot.send_message(pid, "Голосування за дострокове завершення гри! Час: 15 секунд.", reply_markup=keyboard)
-                except Exception as e:
-                    logger.error(f"Failed to send early vote keyboard to user {pid}: {e}")
+                if pid > 0: # Додано перевірку
+                    try:
+                        await bot.send_message(pid, "Голосування за дострокове завершення гри! Час: 15 секунд.", reply_markup=keyboard)
+                    except Exception as e:
+                        logger.error(f"Failed to send early vote keyboard to user {pid}: {e}")
             for i in range(15, 0, -1):
                 if token not in rooms or not rooms[token]['vote_in_progress']:
                     return
                 if i == 5:
                     for pid, _, _ in room['participants']:
-                        try:
-                            await bot.send_message(pid, "5 секунд до кінця голосування!")
-                        except Exception as e:
-                            logger.error(f"Failed to send 5s warning to user {pid}: {e}")
+                        if pid > 0: # Додано перевірку
+                            try:
+                                await bot.send_message(pid, "5 секунд до кінця голосування!")
+                            except Exception as e:
+                                logger.error(f"Failed to send 5s warning to user {pid}: {e}")
                 await asyncio.sleep(1)
             if token not in rooms:
                 return
@@ -542,18 +656,20 @@ async def early_vote(message: types.Message):
                 if room.get('timer_task') and not room['timer_task'].done():
                     room['timer_task'].cancel()
                 for pid, _, _ in room['participants']:
-                    try:
-                        await bot.send_message(pid, f"Голосування успішне! Гра завершена. За: {votes_for}, Проти: {votes_against}")
-                        await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=pid))
-                    except Exception as e:
-                        logger.error(f"Failed to send early vote result to user {pid}: {e}")
+                    if pid > 0: # Додано перевірку
+                        try:
+                            await bot.send_message(pid, f"Голосування успішне! Гра завершена. За: {votes_for}, Проти: {votes_against}")
+                            await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=pid))
+                        except Exception as e:
+                            logger.error(f"Failed to send early vote result to user {pid}: {e}")
                 await show_voting_buttons(token)
             else:
                 for pid, _, _ in room['participants']:
-                    try:
-                        await bot.send_message(pid, f"Голосування провалено. За: {votes_for}, Проти: {votes_against}")
-                    except Exception as e:
-                        logger.error(f"Failed to send early vote failure to user {pid}: {e}")
+                    if pid > 0: # Додано перевірку
+                        try:
+                            await bot.send_message(pid, f"Голосування провалено. За: {votes_for}, Проти: {votes_against}")
+                        except Exception as e:
+                            logger.error(f"Failed to send early vote failure to user {pid}: {e}")
             return
     logger.info(f"User {user_id} not in any room for /early_vote")
     await message.reply("Ви не перебуваєте в жодній кімнаті.")
@@ -597,18 +713,20 @@ async def early_vote_callback(callback: types.CallbackQuery):
             if room.get('timer_task') and not room['timer_task'].done():
                 room['timer_task'].cancel()
             for pid, _, _ in room['participants']:
-                try:
-                    await bot.send_message(pid, f"Голосування успішне! Гра завершена. За: {votes_for}, Проти: {votes_against}")
-                    await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=pid))
-                except Exception as e:
-                    logger.error(f"Failed to send early vote result to user {pid}: {e}")
+                if pid > 0: # Додано перевірку
+                    try:
+                        await bot.send_message(pid, f"Голосування успішне! Гра завершена. За: {votes_for}, Проти: {votes_against}")
+                        await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=pid))
+                    except Exception as e:
+                        logger.error(f"Failed to send early vote result to user {pid}: {e}")
             await show_voting_buttons(token)
         else:
             for pid, _, _ in room['participants']:
-                try:
-                    await bot.send_message(pid, f"Голосування провалено. За: {votes_for}, Проти: {votes_against}")
-                except Exception as e:
-                    logger.error(f"Failed to send early vote failure to user {pid}: {e}")
+                if pid > 0: # Додано перевірку
+                    try:
+                        await bot.send_message(pid, f"Голосування провалено. За: {votes_for}, Проти: {votes_against}")
+                    except Exception as e:
+                        logger.error(f"Failed to send early vote failure to user {pid}: {e}")
 
 async def run_timer(token):
     try:
@@ -616,6 +734,29 @@ async def run_timer(token):
         if not room:
             logger.info(f"Run timer: Room {token} not found")
             return
+        
+        # --- МОДИФІКОВАНИЙ БЛОК ДЛЯ ТЕСТ-ГРИ ---
+        if room.get('is_test_game'):
+            await asyncio.sleep(60) # Чекаємо 1 хвилину
+            if token not in rooms or not rooms[token]['game_started']:
+                return
+            
+            logger.info(f"Test game {token} timer expired. Starting vote.")
+            admin_id = room['owner']
+            if admin_id > 0:
+                try:
+                    await bot.send_message(admin_id, "Тестова гра: 1 хвилина вийшла! Починаємо голосування.")
+                except Exception as e:
+                    logger.error(f"Failed to send test timer warning to admin {admin_id}: {e}")
+            
+            room['game_started'] = False
+            room['last_activity'] = time.time()
+            save_rooms()
+            await show_voting_buttons(token) # Переходимо до голосування
+            return
+        # --- КІНЕЦЬ МОДИФІКОВАНОГО БЛОКУ ---
+
+        # Звичайна логіка таймера
         await asyncio.sleep(1140)
         if token not in rooms or not rooms[token]['game_started']:
             return
@@ -624,10 +765,11 @@ async def run_timer(token):
             return
         room['last_minute_chat'] = True
         for pid, _, _ in room['participants']:
-            try:
-                await bot.send_message(pid, "Залишилась 1 хвилина до кінця гри! Спілкуйтеся вільно.")
-            except Exception as e:
-                logger.error(f"Failed to send 1-minute warning to user {pid}: {e}")
+            if pid > 0: # Додано перевірку
+                try:
+                    await bot.send_message(pid, "Залишилась 1 хвилина до кінця гри! Спілкуйтеся вільно.")
+                except Exception as e:
+                    logger.error(f"Failed to send 1-minute warning to user {pid}: {e}")
         await asyncio.sleep(50)
         if token not in rooms or not rooms[token]['game_started']:
             return
@@ -638,10 +780,11 @@ async def run_timer(token):
             if not room:
                 return
             for pid, _, _ in room['participants']:
-                try:
-                    await bot.send_message(pid, f"До кінця гри: {i} секунд")
-                except Exception as e:
-                    logger.error(f"Failed to send timer update to user {pid}: {e}")
+                if pid > 0: # Додано перевірку
+                    try:
+                        await bot.send_message(pid, f"До кінця гри: {i} секунд")
+                    except Exception as e:
+                        logger.error(f"Failed to send timer update to user {pid}: {e}")
             await asyncio.sleep(1)
         room = rooms.get(token)
         if not room:
@@ -651,11 +794,12 @@ async def run_timer(token):
         room['last_activity'] = time.time()
         save_rooms()
         for pid, _, _ in room['participants']:
-            try:
-                await bot.send_message(pid, "Час вийшов! Голосуйте, хто шпигун.")
-                await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=pid))
-            except Exception as e:
-                logger.error(f"Failed to send game end message to user {pid}: {e}")
+            if pid > 0: # Додано перевірку
+                try:
+                    await bot.send_message(pid, "Час вийшов! Голосуйте, хто шпигун.")
+                    await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=pid))
+                except Exception as e:
+                    logger.error(f"Failed to send game end message to user {pid}: {e}")
         await show_voting_buttons(token)
     except asyncio.CancelledError:
         logger.info(f"Run timer: Timer for room {token} was cancelled")
@@ -674,16 +818,39 @@ async def show_voting_buttons(token):
             logger.info(f"show_voting_buttons: Room {token} not found")
             return
         room['last_activity'] = time.time()
-        save_rooms()
+        
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text=f"{username} ({callsign})", callback_data=f"vote_{token}_{pid}")]
             for pid, username, callsign in room['participants']
         ])
-        for pid, _, _ in room['participants']:
+        
+        # --- МОДИФІКОВАНИЙ БЛОК ДЛЯ ТЕСТ-ГРИ ---
+        if room.get('is_test_game'):
+            admin_id = room['owner']
+            spy_id = room['spy']
+            
+            # Боти миттєво голосують
+            for pid, _, _ in room['participants']:
+                if pid < 0: # Це бот
+                    room['votes'][pid] = spy_id
+            save_rooms()
+            logger.info(f"Test game {token}: Bots have voted for spy {spy_id}.")
+
             try:
-                await bot.send_message(pid, "Оберіть, хто шпигун (30 секунд):", reply_markup=keyboard)
+                await bot.send_message(admin_id, "Тестова гра: Боти проголосували.\nОберіть, хто шпигун (30 секунд):", reply_markup=keyboard)
             except Exception as e:
-                logger.error(f"Failed to send voting keyboard to user {pid}: {e}")
+                logger.error(f"Failed to send test voting keyboard to admin {admin_id}: {e}")
+        # --- КІНЕЦЬ МОДИФІКОВАНОГО БЛОКУ ---
+        else:
+            # Звичайна логіка
+            for pid, _, _ in room['participants']:
+                if pid > 0: # Додано перевірку
+                    try:
+                        await bot.send_message(pid, "Оберіть, хто шпигун (30 секунд):", reply_markup=keyboard)
+                    except Exception as e:
+                        logger.error(f"Failed to send voting keyboard to user {pid}: {e}")
+
+        # Таймер голосування
         for i in range(30, 0, -1):
             if token not in rooms:
                 logger.info(f"show_voting_buttons: Room {token} deleted during voting")
@@ -694,13 +861,18 @@ async def show_voting_buttons(token):
                 return
             if i <= 10:
                 for pid, _, _ in room['participants']:
-                    try:
-                        await bot.send_message(pid, f"Час для голосування: {i} секунд")
-                    except Exception as e:
-                        logger.error(f"Failed to send voting timer to user {pid}: {e}")
+                    if pid > 0: # Додано перевірку
+                        try:
+                            await bot.send_message(pid, f"Час для голосування: {i} секунд")
+                        except Exception as e:
+                            logger.error(f"Failed to send voting timer to user {pid}: {e}")
             await asyncio.sleep(1)
-            if len(room['votes']) == len(room['participants']):
+            
+            # Перевірка завершення голосування
+            all_voted = len(room['votes']) == len(room['participants'])
+            if all_voted:
                 break
+                
         room['last_activity'] = time.time()
         await process_voting_results(token)
     except Exception as e:
@@ -736,8 +908,12 @@ async def process_vote(callback_query: types.CallbackQuery):
         save_rooms()
         logger.info(f"User {user_id} voted for {voted_pid} in room {token}")
         await callback_query.answer("Ваш голос враховано!")
-        if len(room['votes']) == len(room['participants']):
+        
+        # Перевірка, чи всі проголосували
+        all_voted = len(room['votes']) == len(room['participants'])
+        if all_voted:
             await process_voting_results(token)
+            
     except Exception as e:
         logger.error(f"Process vote error: {e}", exc_info=True)
         await callback_query.answer("Помилка при голосуванні!")
@@ -753,16 +929,23 @@ async def process_voting_results(token):
         if not room['votes']:
             logger.info(f"No votes in room {token}")
             for pid, _, _ in room['participants']:
-                try:
-                    await bot.send_message(pid, "Ніхто не проголосував. Шпигун переміг!")
-                except Exception as e:
-                    logger.error(f"Failed to send no-votes result to user {pid}: {e}")
+                if pid > 0: # Додано перевірку
+                    try:
+                        await bot.send_message(pid, "Ніхто не проголосував. Шпигун переміг!")
+                    except Exception as e:
+                        logger.error(f"Failed to send no-votes result to user {pid}: {e}")
             room['last_activity'] = time.time()
             await end_game(token)
             return
         vote_counts = {}
         for voted_id in room['votes'].values():
             vote_counts[voted_id] = vote_counts.get(voted_id, 0) + 1
+        
+        # Може бути 0 голосів, якщо в кімнаті тільки боти (адмін лівнув)
+        if not vote_counts:
+             await end_game(token)
+             return
+            
         max_votes = max(vote_counts.values())
         suspected = [pid for pid, count in vote_counts.items() if count == max_votes]
         logger.info(f"process_voting_results: Suspected players: {suspected}, Spy: {room['spy']}")
@@ -806,13 +989,14 @@ async def process_voting_results(token):
                 logger.info(f"Spy {room['spy']} detected in room {token}, sending guess options")
                 
                 for pid, _, _ in room['participants']:
-                    try:
-                        if pid == room['spy']:
-                            await bot.send_message(pid, "Гравці проголосували за вас! Вгадайте локацію (30 секунд):", reply_markup=reply_markup)
-                        else:
-                            await bot.send_message(pid, f"Гравці вважають, що шпигун — {spy_username} ({spy_callsign}). Чекаємо, чи вгадає він локацію (30 секунд).")
-                    except Exception as e:
-                        logger.error(f"Failed to send spy guess prompt to user {pid}: {e}")
+                    if pid > 0: # Додано перевірку
+                        try:
+                            if pid == room['spy']:
+                                await bot.send_message(pid, "Гравці проголосували за вас! Вгадайте локацію (30 секунд):", reply_markup=reply_markup)
+                            else:
+                                await bot.send_message(pid, f"Гравці вважають, що шпигун — {spy_username} ({spy_callsign}). Чекаємо, чи вгадає він локацію (30 секунд).")
+                        except Exception as e:
+                            logger.error(f"Failed to send spy guess prompt to user {pid}: {e}")
                 
                 # Запускаємо 30-секундний таймер на вгадування
                 for i in range(30, 0, -1):
@@ -825,10 +1009,11 @@ async def process_voting_results(token):
 
                     if i <= 10:
                         for pid, _, _ in room['participants']:
-                            try:
-                                await bot.send_message(pid, f"Час для вгадування локації: {i} секунд")
-                            except Exception as e:
-                                logger.error(f"Failed to send spy guess timer to user {pid}: {e}")
+                            if pid > 0: # Додано перевірку
+                                try:
+                                    await bot.send_message(pid, f"Час для вгадування локації: {i} секунд")
+                                except Exception as e:
+                                    logger.error(f"Failed to send spy guess timer to user {pid}: {e}")
                     await asyncio.sleep(1)
                 
                 # Якщо ми дійшли сюди, 30 секунд вийшло, а шпигун не відповів
@@ -847,10 +1032,11 @@ async def process_voting_results(token):
                         f"Час на вгадування вийшов! Шпигун не вгадав локацію. Гравці перемогли!"
                     )
                     for pid, _, _ in room['participants']:
-                        try:
-                            await bot.send_message(pid, result)
-                        except Exception as e:
-                            logger.error(f"Failed to send game result to user {pid}: {e}")
+                        if pid > 0: # Додано перевірку
+                            try:
+                                await bot.send_message(pid, result)
+                            except Exception as e:
+                                logger.error(f"Failed to send game result to user {pid}: {e}")
                     await end_game(token) # Завершуємо гру
             
             # Сюди ми потрапляємо, коли шпигун вже натиснув кнопку
@@ -873,10 +1059,11 @@ async def process_voting_results(token):
                     )
                 
                 for pid, _, _ in room['participants']:
-                    try:
-                        await bot.send_message(pid, result)
-                    except Exception as e:
-                        logger.error(f"Failed to send game result to user {pid}: {e}")
+                    if pid > 0: # Додано перевірку
+                        try:
+                            await bot.send_message(pid, result)
+                        except Exception as e:
+                            logger.error(f"Failed to send game result to user {pid}: {e}")
                 
                 await end_game(token) # Завершуємо гру
 
@@ -888,10 +1075,11 @@ async def process_voting_results(token):
                 f"Шпигуна не знайшли. Шпигун переміг!"
             )
             for pid, _, _ in room['participants']:
-                try:
-                    await bot.send_message(pid, result)
-                except Exception as e:
-                    logger.error(f"Failed to send game result to user {pid}: {e}")
+                if pid > 0: # Додано перевірку
+                    try:
+                        await bot.send_message(pid, result)
+                    except Exception as e:
+                        logger.error(f"Failed to send game result to user {pid}: {e}")
             await end_game(token)
             
         # --- КІНЕЦЬ ЗМІНЕНОГО БЛОКУ ---
@@ -953,7 +1141,6 @@ async def process_spy_guess_callback(callback_query: types.CallbackQuery):
 
 # --- КІНЕЦЬ НОВОЇ ФУНКЦІЇ ---
 
-# --- ВИДАЛЕНО ФУНКЦІЮ handle_spy_guess ---
 
 @dp.message()
 async def handle_room_message(message: types.Message, state: FSMContext):
@@ -976,7 +1163,7 @@ async def handle_room_message(message: types.Message, state: FSMContext):
                 room['messages'].append(msg)
                 room['messages'] = room['messages'][-100:]
                 for pid, _, _ in room['participants']:
-                    if pid != user_id:
+                    if pid != user_id and pid > 0: # Додано перевірку (не надсилати ботам)
                         try:
                             await bot.send_message(pid, msg)
                         except Exception as e:
@@ -1010,14 +1197,17 @@ async def end_game(token):
         )
         owner_id = room['owner']
         for pid, _, _ in room['participants']:
-            try:
-                if pid == owner_id:
-                    await bot.send_message(pid, result + "/startgame - Почати нову гру")
-                else:
-                    await bot.send_message(pid, result)
-                await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=pid))
-            except Exception as e:
-                logger.error(f"Failed to send end game message to user {pid}: {e}")
+            if pid > 0: # Додано перевірку
+                try:
+                    if pid == owner_id:
+                        await bot.send_message(pid, result + "/startgame - Почати нову гру")
+                    else:
+                        await bot.send_message(pid, result)
+                    await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=pid))
+                except Exception as e:
+                    logger.error(f"Failed to send end game message to user {pid}: {e}")
+        
+        # Скидаємо кімнату (але не видаляємо, якщо це тест)
         room['game_started'] = False
         room['spy'] = None
         room['location'] = None
@@ -1033,8 +1223,22 @@ async def end_game(token):
         room['votes_for'] = 0
         room['votes_against'] = 0
         room['participants'] = [(pid, username, None) for pid, username, _ in room['participants']]
+        
+        # Якщо це не тестова гра, скидаємо позивні
+        if not room.get('is_test_game'):
+             room['participants'] = [(pid, username, None) for pid, username, _ in room['participants']]
+        
         save_rooms()
         logger.info(f"Game ended in room {token}")
+        
+        # Якщо це тестова гра, видаляємо кімнату
+        if room.get('is_test_game'):
+            await asyncio.sleep(5) # Даємо час прочитати результат
+            if token in rooms:
+                del rooms[token]
+                logger.info(f"Test room {token} deleted after game end.")
+                save_rooms()
+
     except Exception as e:
         logger.error(f"End game error in room {token}: {e}", exc_info=True)
 
@@ -1047,6 +1251,7 @@ async def end_game(token):
 async def set_webhook_with_retry(webhook_url):
     logger.info(f"Attempting to set webhook: {webhook_url}")
     await bot.delete_webhook(drop_pending_updates=True)
+    # --- ВИПРАВЛЕНО: timeout -> request_timeout ---
     await bot.set_webhook(webhook_url, drop_pending_updates=True, max_connections=100, request_timeout=30)
     webhook_info = await bot.get_webhook_info()
     logger.info(f"Webhook set, current info: {webhook_info}")
@@ -1110,7 +1315,7 @@ class CustomRequestHandler(SimpleRequestHandler):
 if not USE_POLLING:
     CustomRequestHandler(dispatcher=dp, bot=bot).register(app, path=webhook_path)
     app.router.add_route('GET', '/health', health_check)
-    app.router.add_route('HEAD', '/health', health_check)
+    app.router.add_route('HEAD', '/health', health_check) # Виправлено синтаксичну помилку
     setup_application(app, dp, bot=bot)
 
 if __name__ == "__main__":
@@ -1126,4 +1331,4 @@ if __name__ == "__main__":
             web.run_app(app, host="0.0.0.0", port=port)
     except Exception as e:
         logger.error(f"Server failed to start: {e}", exc_info=True)
-        raise
+        raise # Виправлено синтаксичну помилку
