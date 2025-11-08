@@ -9,7 +9,8 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.filters import Command, StateFilter
+# --- CommandObject БІЛЬШЕ НЕ ПОТРІБЕН ДЛЯ /testgame ---
+from aiogram.filters import Command, StateFilter 
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand, BotCommandScopeChat
 from aiogram.fsm.context import FSMContext
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
@@ -152,6 +153,7 @@ async def health_check(request):
         logger.error(f"Health check error: {e}", exc_info=True)
         return web.Response(text=f"ERROR: {e}", status=500)
 
+# --- ВИПРАВЛЕНО: `sleep(600)` -> `sleep(120)` ---
 async def check_webhook_periodically():
     await asyncio.sleep(20) # Дамо боту запуститися перед першою перевіркою
     while True:
@@ -237,7 +239,7 @@ async def reset_state(message: types.Message, state: FSMContext):
         logger.error(f"Failed to reset FSM state: {e}", exc_info=True)
         await message.reply("Помилка при скиданні стану.")
 
-# --- НОВА АДМІН-КОМАНДА ДЛЯ ТЕСТУВАННЯ ---
+# --- ЗМІНЕНО: /testgame (бот - шпигун) ---
 @dp.message(Command("testgame"))
 async def test_game(message: types.Message):
     if message.from_user.id != ADMIN_ID:
@@ -248,7 +250,7 @@ async def test_game(message: types.Message):
     
     user_id = message.from_user.id
     username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
-    logger.info(f"Admin {user_id} starting test game")
+    logger.info(f"Admin {user_id} starting test game (BOT IS SPY)")
 
     # Перевіряємо, чи адмін вже в кімнаті
     for token, room in list(rooms.items()):
@@ -297,8 +299,9 @@ async def test_game(message: types.Message):
     room['game_started'] = True
     room['location'] = random.choice(LOCATIONS)
     
-    # Адмін може обрати себе шпигуном: /testgame spy
-    make_admin_spy = 'spy' in message.text.lower()
+    # --- ЗМІНЕНО: /testgame завжди робить бота шпигуном ---
+    make_admin_spy = False
+    
     participant_ids = [p[0] for p in room['participants']]
     
     if make_admin_spy:
@@ -317,16 +320,145 @@ async def test_game(message: types.Message):
     # Надсилаємо роль тільки адміну
     admin_callsign = next(c for p, u, c in room['participants'] if p == user_id)
     if user_id == room['spy']:
+        # Цей код ніколи не виконається для /testgame, але хай буде
         await bot.send_message(user_id, f"ТЕСТОВА ГРА.\nВи ШПИГУН ({admin_callsign})!\nЛокація: {room['location']} (ви її бачите для тесту).\nБоти проголосують за 1 хв.")
     else:
         await bot.send_message(user_id, f"ТЕСТОВА ГРА.\nЛокація: {room['location']}\nВи {admin_callsign}. Боти проголосують за 1 хв.")
 
-    await message.reply(f"Тестову кімнату створено: {room_token}\nШпигун: {room['spy']}\nЛокація: {room['location']}")
+    await message.reply(f"Тестову кімнату створено: {room_token}\nШпигун: {room['spy']} (Бот)\nЛокація: {room['location']}")
     
     # Запускаємо таймер
     room['timer_task'] = asyncio.create_task(run_timer(room_token))
 
-# --- Кінець нової команди ---
+# --- НОВА КОМАНДА: /testgamespy (адмін - шпигун) ---
+@dp.message(Command("testgamespy"))
+async def test_game_as_spy(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.reply("Ви не адміністратор!")
+        return
+    if await check_maintenance(message):
+        return
+    
+    user_id = message.from_user.id
+    username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
+    logger.info(f"Admin {user_id} starting test game (ADMIN IS SPY)")
+
+    # Перевіряємо, чи адмін вже в кімнаті
+    for token, room in list(rooms.items()):
+        if user_id in [p[0] for p in room['participants']]:
+            await message.reply("Ви вже в кімнаті! Спочатку покиньте її (/leave).")
+            return
+
+    room_token = f"test_spy_{uuid.uuid4().hex[:4]}" # Створюємо унікальний тестовий токен
+    
+    # Створюємо учасників: адмін + 3 боти (з негативними ID)
+    participants = [
+        (user_id, username, None),
+        (-1, "Бот Василь", None),
+        (-2, "Бот Степан", None),
+        (-3, "Бот Галина", None)
+    ]
+    
+    rooms[room_token] = {
+        'owner': user_id,
+        'participants': participants,
+        'game_started': False,
+        'is_test_game': True, # Головний прапорець
+        'spy': None,
+        'location': None,
+        'messages': [],
+        'votes': {},
+        'banned_from_voting': set(),
+        'vote_in_progress': False,
+        'voters': set(),
+        'timer_task': None,
+        'last_activity': time.time(),
+        'last_minute_chat': False,
+        'waiting_for_spy_guess': False,
+        'spy_guess': None,
+        'votes_for': 0,
+        'votes_against': 0
+    }
+    
+    room = rooms[room_token]
+    
+    # --- Логіка, скопійована з /startgame ---
+    available_callsigns = CALLSIGNS.copy()
+    random.shuffle(available_callsigns)
+    room['participants'] = [(pid, uname, available_callsigns[i]) for i, (pid, uname, _) in enumerate(room['participants'])]
+    
+    room['game_started'] = True
+    room['location'] = random.choice(LOCATIONS)
+    
+    # --- ЗМІНЕНО: /testgamespy завжди робить адміна шпигуном ---
+    make_admin_spy = True
+    
+    if make_admin_spy:
+        room['spy'] = user_id
+        logger.info(f"Test game {room_token}: Admin is spy.")
+    else:
+        # Цей код ніколи не виконається
+        bot_ids = [pid for pid in [p[0] for p in room['participants']] if pid < 0]
+        room['spy'] = random.choice(bot_ids)
+        logger.info(f"Test game {room_token}: Bot {room['spy']} is spy.")
+
+    room['last_activity'] = time.time()
+    save_rooms()
+    
+    logger.info(f"Test game started in room {room_token}, spy: {room['spy']}, location: {room['location']}")
+
+    # Надсилаємо роль тільки адміну
+    admin_callsign = next(c for p, u, c in room['participants'] if p == user_id)
+    if user_id == room['spy']:
+        await bot.send_message(user_id, f"ТЕСТОВА ГРА.\nВи ШПИГУН ({admin_callsign})!\nЛокація: {room['location']} (ви її бачите для тесту).\nБоти проголосують за 1 хв.")
+    else:
+        # Цей код ніколи не виконається
+        await bot.send_message(user_id, f"ТЕСТОВА ГРА.\nЛокація: {room['location']}\nВи {admin_callsign}. Боти проголосують за 1 хв.")
+
+    await message.reply(f"Тестову кімнату створено: {room_token}\nШпигун: {room['spy']} (ВИ)\nЛокація: {room['location']}")
+    
+    # Запускаємо таймер
+    room['timer_task'] = asyncio.create_task(run_timer(room_token))
+
+
+# --- НОВА АДМІН-КОМАНДА /whois ---
+@dp.message(Command("whois"))
+async def whois_spy(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        # Ігноруємо команду, якщо це не адмін, щоб ніхто не знав про її існування
+        logger.warning(f"Non-admin user {message.from_user.id} tried to use /whois")
+        return
+    
+    user_id = message.from_user.id
+    user_room = None
+    
+    # Шукаємо кімнату, де зараз адмін
+    for token, room in rooms.items():
+        if user_id in [p[0] for p in room['participants']]:
+            user_room = room
+            break
+            
+    if not user_room or not user_room['game_started']:
+        await message.reply("[DEBUG] Ви не в активній грі.")
+        return
+
+    try:
+        if user_id == user_room['spy']:
+            # Адмін - шпигун, показуємо локацію
+            await message.reply(f"[DEBUG] Локація: {user_room['location']}")
+        else:
+            # Адмін - не шпигун, показуємо шпигуна
+            spy_id = user_room['spy']
+            spy_info = next((p for p in user_room['participants'] if p[0] == spy_id), None)
+            if spy_info:
+                # spy_info = (pid, username, callsign)
+                await message.reply(f"[DEBUG] Шпигун: {spy_info[1]} ({spy_info[2]})")
+            else:
+                await message.reply(f"[DEBUG] Не можу знайти шпигуна (ID: {spy_id}).")
+    except Exception as e:
+        logger.error(f"Failed to send /whois info to admin: {e}")
+        await message.reply(f"[DEBUG] Помилка: {e}")
+
 
 # Команди гри
 @dp.message(Command("start"))
@@ -353,8 +485,10 @@ async def send_welcome(message: types.Message):
             "/maintenance_on - Увімкнути технічне обслуговування\n"
             "/maintenance_off - Вимкнути технічне обслуговування\n"
             "/check_webhook - Перевірити стан webhook\n"
-            "/testgame - Запустити тестову гру з ботами\n"
-            "/testgame spy - Запустити тестову гру, де ви шпигун"
+            # --- ЗМІНЕНО: оновлений текст ---
+            "/testgame - Запустити тестову гру (бот - шпигун)\n"
+            "/testgamespy - Запустити тестову гру (ви - шпигун)\n"
+            "/whois - (В приватні повідомлення) Показати шпигуна/локацію"
         )
 
 @dp.message(Command("create"))
@@ -1200,7 +1334,7 @@ async def end_game(token):
         for pid, _, _ in room['participants']:
             if pid > 0: # Додано перевірку
                 try:
-                    if pid == owner_id:
+                    if pid == owner_id and not room.get('is_test_game'): # Власник може почати нову, але не в тесті
                         await bot.send_message(pid, result + "/startgame - Почати нову гру")
                     else:
                         await bot.send_message(pid, result)
@@ -1223,7 +1357,6 @@ async def end_game(token):
         room['spy_guess'] = None
         room['votes_for'] = 0
         room['votes_against'] = 0
-        room['participants'] = [(pid, username, None) for pid, username, _ in room['participants']]
         
         # Якщо це не тестова гра, скидаємо позивні
         if not room.get('is_test_game'):
@@ -1283,6 +1416,7 @@ async def on_startup(_):
         logger.error(f"Startup failed: {e}", exc_info=True)
         raise
 
+# --- ВИПРАВЛЕНО: прибрано `delete_webhook` ---
 async def on_shutdown(_):
     try:
         logger.info("Shutting down server...")
@@ -1318,7 +1452,7 @@ class CustomRequestHandler(SimpleRequestHandler):
 if not USE_POLLING:
     CustomRequestHandler(dispatcher=dp, bot=bot).register(app, path=webhook_path)
     app.router.add_route('GET', '/health', health_check)
-    app.router.add_route('HEAD', '/health', health_check) # Виправлено синтаксичну помилку
+    app.router.add_route('HEAD', '/health', health_check) 
     setup_application(app, dp, bot=bot)
 
 if __name__ == "__main__":
@@ -1334,4 +1468,4 @@ if __name__ == "__main__":
             web.run_app(app, host="0.0.0.0", port=port)
     except Exception as e:
         logger.error(f"Server failed to start: {e}", exc_info=True)
-        raise # Виправлено синтаксичну помилку
+        raise
