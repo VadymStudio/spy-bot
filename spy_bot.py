@@ -606,16 +606,18 @@ async def send_welcome(message: types.Message):
     menu_text = (
         "Привіт! Це бот для гри 'Шпигун'.\n\n"
         "Команди:\n"
-        "**/find_match** - Швидкий пошук гри\n"
-        "**/create** - Створити приватну кімнату\n"
-        "**/join** - Приєднатися до кімнати за токеном\n\n"
+        "/find_match - Швидкий пошук гри\n"
+        "/create - Створити приватну кімнату\n"
+        "/join - Приєднатися до кімнати за токеном\n\n"
         "Ігрові команди:\n"
         "/leave - Покинути кімнату/чергу\n"
         "/startgame - Запустити гру (тільки власник приватної кімнати)\n"
         "/early_vote - Дострокове завершення гри (під час гри)\n"
         "/reset_state - Скинути стан бота (якщо щось зламалось)\n"
     )
-    await message.reply(menu_text, parse_mode="Markdown")
+    # --- ВИПРАВЛЕНО: прибрано parse_mode ---
+    await message.reply(menu_text) 
+    
     if message.from_user.id == ADMIN_ID:
         await message.reply(
             "Команди адміністратора:\n"
