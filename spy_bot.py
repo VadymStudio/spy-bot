@@ -565,6 +565,29 @@ async def whois_spy(message: types.Message):
         logger.error(f"Failed to send /whois info to admin: {e}")
         await message.reply(f"[DEBUG] Помилка: {e}")
 
+# --- НОВА АДМІН-КОМАНДА /getdb ---
+@dp.message(Command("getdb"))
+async def get_database_file(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        # Ігноруємо, якщо це не адмін
+        logger.warning(f"Non-admin user {message.from_user.id} tried to use /getdb")
+        return
+
+    try:
+        # Переконуємось, що файл існує
+        if not os.path.exists(DB_PATH):
+            await message.reply("Файл бази даних `players.db` ще не створено. Зіграйте хоча б одну гру.")
+            return
+            
+        # Готуємо файл до відправки
+        db_file = types.FSInputFile(DB_PATH)
+        await message.reply_document(db_file, caption="Ось твоя база даних `players.db`.")
+        logger.info(f"Admin {ADMIN_ID} successfully requested DB file.")
+        
+    except Exception as e:
+        logger.error(f"Failed to send DB file to admin: {e}", exc_info=True)
+        await message.reply(f"Не вдалося надіслати файл: {e}")
+
 @dp.message(Command("stats"))
 async def show_stats(message: types.Message, state: FSMContext):
     if await check_maintenance(message):
@@ -736,7 +759,8 @@ async def send_welcome(message: types.Message):
             "/check_webhook - Перевірити стан webhook\n"
             "/testgame - Запустити тестову гру (бот - шпигун)\n"
             "/testgamespy - Запустити тестову гру (ви - шпигун)\n"
-            "/whois - (В приватні повідомлення) Показати шпигуна/локацію"
+            "/whois - (В приватні повідомлення) Показати шпигуна/локацію\n"
+            "/getdb - Отримати файл бази даних (players.db)"
         )
 
 @dp.message(Command("find_match"))
