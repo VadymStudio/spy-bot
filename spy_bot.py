@@ -34,7 +34,16 @@ load_dotenv()
 API_TOKEN = os.getenv('BOT_TOKEN')
 if not API_TOKEN:
     raise ValueError("BOT_TOKEN is not set in environment variables")
-ADMIN_ID = int(os.getenv('ADMIN_ID', '5280737551'))
+
+# --- ЗМІНЕНО: Завантажуємо список адмінів ---
+ADMIN_IDS_STR = os.getenv('ADMIN_ID') # 1. Беремо ID (БЕЗ значення за замовчуванням)
+if not ADMIN_IDS_STR:
+    # 2. Якщо в .env нічого немає, бот НЕ ЗАПУСТИТЬСЯ. Це правильно.
+    raise ValueError("ADMIN_ID is not set in environment variables. Please set it (comma-separated if multiple).") 
+    
+ADMIN_IDS = [int(admin_id.strip()) for admin_id in ADMIN_IDS_STR.split(',')]
+logger.info(f"Loaded Admin IDs: {ADMIN_IDS}")
+# --- Кінець зміни ---
 USE_POLLING = os.getenv('USE_POLLING', 'false').lower() == 'true'
 RENDER_EXTERNAL_HOSTNAME = os.getenv('RENDER_EXTERNAL_HOSTNAME', 'spy-game-bot.onrender.com')
 bot = Bot(token=API_TOKEN)
@@ -46,7 +55,7 @@ maintenance_mode = False
 active_users = set()
 rooms = {} 
 user_message_times = {} 
-matchmaking_queue = [] 
+matchmaking_queue = [] # --- ЗМІНЕНО: Тепер зберігає (user_id, username, timestamp) ---
 maintenance_timer_task = None 
 DB_PATH = 'players.db' # Шлях до нашої бази даних
 
@@ -77,7 +86,7 @@ ROOM_EXPIRY = 3600 # 1 година
 XP_CIVILIAN_WIN = 10
 XP_SPY_WIN = 20
 
-# --- НОВЕ: Визначаємо наші постійні клавіатури ---
+# --- Клавіатури ---
 kb_main_menu = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🎮 Знайти Гру")],
@@ -102,7 +111,7 @@ kb_in_game = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# --- НОВЕ: Визначаємо списки слеш-команд ---
+# --- Списки слеш-команд ---
 cmds_default = [
     BotCommand(command="start", description="Головне меню"),
     BotCommand(command="find_match", description="Швидкий пошук гри"),
@@ -119,23 +128,20 @@ cmds_in_game = [
     BotCommand(command="leave", description="Покинути гру")
 ]
 
-# --- НОВЕ: Хелпер-функції для встановлення команд ---
+# --- Хелпер-функції для встановлення команд ---
 async def set_default_commands_for_user(bot: Bot, user_id: int):
-    """Встановлює дефолтний набір команд для юзера (головне меню)."""
     try:
         await bot.set_my_commands(cmds_default, scope=BotCommandScopeChat(chat_id=user_id))
     except Exception as e:
         logger.warning(f"Failed to set default commands for {user_id}: {e}")
 
 async def set_lobby_commands_for_user(bot: Bot, user_id: int):
-    """Встановлює команди для лобі."""
     try:
         await bot.set_my_commands(cmds_in_lobby, scope=BotCommandScopeChat(chat_id=user_id))
     except Exception as e:
         logger.warning(f"Failed to set lobby commands for {user_id}: {e}")
 
 async def set_game_commands_for_user(bot: Bot, user_id: int):
-    """Встановлює команди для гри."""
     try:
         await bot.set_my_commands(cmds_in_game, scope=BotCommandScopeChat(chat_id=user_id))
     except Exception as e:
@@ -295,7 +301,7 @@ def load_rooms():
                     room['last_minute_chat'] = room.get('last_minute_chat', False)
                     room['waiting_for_spy_guess'] = room.get('waiting_for_spy_guess', False)
                     room['is_test_game'] = room.get('is_test_game', False) 
-                    room['created_at'] = room.get('created_at', time.time()) # --- НОВЕ: Додаємо час створення
+                    room['created_at'] = room.get('created_at', time.time()) 
                 logger.info("Rooms loaded from rooms.json")
     except Exception as e:
         logger.error(f"Failed to load rooms: {e}", exc_info=True)
@@ -391,7 +397,7 @@ async def check_ban_and_reply(event):
     if not user_id:
         return False 
     
-    if user_id == ADMIN_ID:
+    if user_id in ADMIN_IDS: # --- ЗМІНЕНО: Перевірка по списку ---
         return False 
 
     try:
@@ -440,7 +446,7 @@ def parse_ban_time(time_str: str) -> int:
 # --- Команди Адміністратора ---
 
 async def check_maintenance(message: types.Message):
-    if maintenance_mode and message.from_user.id != ADMIN_ID:
+    if maintenance_mode and message.from_user.id not in ADMIN_IDS: # --- ЗМІНЕНО: Перевірка по списку ---
         await message.reply("Бот на технічному обслуговуванні. Зачекайте, будь ласка.")
         return True
     return False
@@ -471,7 +477,7 @@ async def start_maintenance_now():
 
 @dp.message(Command("maintenance_on"))
 async def maintenance_on(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
+    if message.from_user.id not in ADMIN_IDS: # --- ЗМІНЕНО: Перевірка по списку ---
         await message.reply("Ви не адміністратор!")
         return
     
@@ -485,7 +491,7 @@ async def maintenance_on(message: types.Message):
 
 @dp.message(Command("maintenance_off"))
 async def maintenance_off(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
+    if message.from_user.id not in ADMIN_IDS: # --- ЗМІНЕНО: Перевірка по списку ---
         await message.reply("Ви не адміністратор!")
         return
     global maintenance_mode
@@ -532,8 +538,7 @@ async def run_maintenance_timer():
 
 @dp.message(Command("maint_timer"))
 async def start_maint_timer(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return
+    if message.from_user.id not in ADMIN_IDS: return # --- ЗМІНЕНО: Перевірка по списку ---
     
     global maintenance_timer_task
     if maintenance_timer_task and not maintenance_timer_task.done():
@@ -545,8 +550,7 @@ async def start_maint_timer(message: types.Message):
 
 @dp.message(Command("cancel_maint"))
 async def cancel_maint_timer(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return
+    if message.from_user.id not in ADMIN_IDS: return # --- ЗМІНЕНО: Перевірка по списку ---
         
     global maintenance_timer_task
     if not maintenance_timer_task or maintenance_timer_task.done():
@@ -559,8 +563,7 @@ async def cancel_maint_timer(message: types.Message):
 
 @dp.message(Command("check_webhook"))
 async def check_webhook(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return
+    if message.from_user.id not in ADMIN_IDS: return # --- ЗМІНЕНО: Перевірка по списку ---
     try:
         info = await bot.get_webhook_info()
         await message.reply(f"Webhook info: {info}")
@@ -569,7 +572,7 @@ async def check_webhook(message: types.Message):
 
 @dp.message(Command("reset_state"))
 async def reset_state(message: types.Message, state: FSMContext):
-    if message.from_user.id == ADMIN_ID: 
+    if message.from_user.id in ADMIN_IDS: # --- ЗМІНЕНО: Перевірка по списку ---
         try:
             await state.clear()
             await message.reply("Стан FSM скинуто.", reply_markup=kb_main_menu)
@@ -613,8 +616,7 @@ def build_locations_keyboard(token: str, locations: list, columns: int = 3) -> I
 
 @dp.message(Command("testgame"))
 async def test_game(message: types.Message, state: FSMContext): 
-    if message.from_user.id != ADMIN_ID:
-        return
+    if message.from_user.id not in ADMIN_IDS: return # --- ЗМІНЕНО: Перевірка по списку ---
     if await check_maintenance(message):
         return
     
@@ -649,8 +651,7 @@ async def test_game(message: types.Message, state: FSMContext):
 
 @dp.message(Command("testgamespy"))
 async def test_game_as_spy(message: types.Message, state: FSMContext): 
-    if message.from_user.id != ADMIN_ID:
-        return
+    if message.from_user.id not in ADMIN_IDS: return # --- ЗМІНЕНО: Перевірка по списку ---
     if await check_maintenance(message):
         return
         
@@ -686,7 +687,7 @@ async def test_game_as_spy(message: types.Message, state: FSMContext):
 
 @dp.message(Command("whois"))
 async def whois_spy(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
+    if message.from_user.id not in ADMIN_IDS: # --- ЗМІНЕНО: Перевірка по списку ---
         logger.warning(f"Non-admin user {message.from_user.id} tried to use /whois")
         return
     
@@ -718,7 +719,7 @@ async def whois_spy(message: types.Message):
 
 @dp.message(Command("getdb"))
 async def get_database_file(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
+    if message.from_user.id not in ADMIN_IDS: # --- ЗМІНЕНО: Перевірка по списку ---
         logger.warning(f"Non-admin user {message.from_user.id} tried to use /getdb")
         return
 
@@ -729,7 +730,7 @@ async def get_database_file(message: types.Message):
             
         db_file = FSInputFile(DB_PATH)
         await message.reply_document(db_file, caption="Ось твоя база даних `players.db`.")
-        logger.info(f"Admin {ADMIN_ID} successfully requested DB file.")
+        logger.info(f"Admin {message.from_user.id} successfully requested DB file.")
         
     except Exception as e:
         logger.error(f"Failed to send DB file to admin: {e}", exc_info=True)
@@ -737,7 +738,7 @@ async def get_database_file(message: types.Message):
 
 @dp.message(Command("getlog"))
 async def get_game_log(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
+    if message.from_user.id not in ADMIN_IDS: # --- ЗМІНЕНО: Перевірка по списку ---
         logger.warning(f"Non-admin user {message.from_user.id} tried to use /getlog")
         return
         
@@ -793,7 +794,7 @@ async def get_game_log(message: types.Message):
 
 @dp.message(Command("recentgames"))
 async def get_recent_games(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
+    if message.from_user.id not in ADMIN_IDS: # --- ЗМІНЕНО: Перевірка по списку ---
         logger.warning(f"Non-admin user {message.from_user.id} tried to use /recentgames")
         return
         
@@ -832,8 +833,7 @@ async def get_recent_games(message: types.Message):
 
 @dp.message(Command("ban"))
 async def ban_user(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return
+    if message.from_user.id not in ADMIN_IDS: return # --- ЗМІНЕНО: Перевірка по списку ---
 
     args = message.text.split()
     if len(args) < 2:
@@ -905,8 +905,7 @@ async def ban_user(message: types.Message):
 
 @dp.message(Command("unban"))
 async def unban_user(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return
+    if message.from_user.id not in ADMIN_IDS: return # --- ЗМІНЕНО: Перевірка по списку ---
 
     target_id = None
     target_username = None
@@ -961,7 +960,7 @@ async def notify_queue_updates():
         return
         
     logger.info(f"Notifying {queue_size} players in queue.")
-    for pid, _ in matchmaking_queue:
+    for pid, _, _ in matchmaking_queue: # --- ЗМІНЕНО: p[2] - це timestamp ---
         try:
             await bot.send_message(pid, f"Пошук... з вами в черзі: {queue_size} гравців.")
         except Exception:
@@ -975,7 +974,7 @@ async def create_game_from_queue(players: list):
     
     room_token = f"auto_{uuid.uuid4().hex[:4]}"
     owner_id = random.choice([p[0] for p in players]) 
-    participants_list = [(pid, uname, None) for pid, uname in players]
+    participants_list = [(pid, uname, None) for pid, uname, _ in players] # --- ЗМІНЕНО: Ігноруємо timestamp ---
     
     rooms[room_token] = {
         'owner': owner_id, 'participants': participants_list, 'game_started': False, 'is_test_game': False, 
@@ -987,7 +986,7 @@ async def create_game_from_queue(players: list):
     
     room = rooms[room_token]
     
-    for pid, _ in players:
+    for pid, _, _ in players: # --- ЗМІНЕНО: Ігноруємо timestamp ---
         try:
             await dp.storage.set_state(bot=bot, chat_id=pid, user_id=pid, state=None)
             await bot.send_message(pid, f"Гру знайдено! Підключаю до кімнати {room_token}...", reply_markup=kb_in_game)
@@ -997,14 +996,32 @@ async def create_game_from_queue(players: list):
     await start_game_logic(room, room_token) 
 
 async def matchmaking_processor():
+    """Фоновий процес, який кожні 10 сек аналізує чергу та створює ігри."""
     global matchmaking_queue
     while True:
-        await asyncio.sleep(10) 
+        await asyncio.sleep(10) # Чекаємо 10 секунд
         
         try:
-            if maintenance_mode or not matchmaking_queue:
+            if maintenance_mode:
                 continue
                 
+            current_time = time.time()
+            
+            # --- НОВЕ: Таймаут матчмейкінгу (2 хвилини) ---
+            timed_out_users = [p for p in matchmaking_queue if current_time - p[2] > 120]
+            matchmaking_queue = [p for p in matchmaking_queue if current_time - p[2] <= 120]
+            
+            if timed_out_users:
+                logger.info(f"Timing out {len(timed_out_users)} users from queue.")
+                for pid, username, _ in timed_out_users:
+                    try:
+                        await bot.send_message(pid, "Час пошуку вичерпано. Спробуйте ще раз пізніше.", reply_markup=kb_main_menu)
+                        await set_default_commands_for_user(bot, pid)
+                        await dp.storage.set_state(bot=bot, chat_id=pid, user_id=pid, state=None)
+                    except Exception as e:
+                        logger.warning(f"Failed to notify user {pid} about timeout: {e}")
+            # --- Кінець таймауту ---
+
             queue_size = len(matchmaking_queue)
             if queue_size < 3:
                 continue 
@@ -1053,6 +1070,11 @@ async def show_stats(message: types.Message, state: FSMContext):
         stats = await get_player_stats(user_id, username)
         _, _, total_xp, games_played, spy_wins, civilian_wins, _ = stats 
         
+        # --- НОВЕ: Виправлення для нових гравців ---
+        if games_played == 0:
+            await message.reply("Зіграйте принаймі один раз, щоб отримати свою статистику.", reply_markup=kb_main_menu)
+            return
+            
         level, xp_needed_for_level, xp_in_current_level, _ = get_level_from_xp(total_xp)
         
         total_wins = spy_wins + civilian_wins
@@ -1088,7 +1110,6 @@ async def send_welcome(message: types.Message, state: FSMContext):
     if await check_maintenance(message):
         return
     
-    # --- НОВЕ: При старті скидаємо будь-який стан (напр. чергу) ---
     await state.clear()
         
     menu_text = (
@@ -1098,7 +1119,7 @@ async def send_welcome(message: types.Message, state: FSMContext):
     await message.reply(menu_text, reply_markup=kb_main_menu)
     await set_default_commands_for_user(bot, message.from_user.id)
     
-    if message.from_user.id == ADMIN_ID:
+    if message.from_user.id in ADMIN_IDS: # --- ЗМІНЕНО: Перевірка по списку ---
         await message.answer(
             "Вітаю, Адмін. Тобі доступні спец. команди (тільки через слеш-меню):\n"
             "/maintenance_on, /maintenance_off, /maint_timer, /cancel_maint, "
@@ -1125,7 +1146,6 @@ async def text_show_stats(message: types.Message, state: FSMContext):
 
 @dp.message(F.text == "❓ Допомога")
 async def text_send_welcome(message: types.Message, state: FSMContext):
-    # "Допомога" просто показує головне меню знову
     await send_welcome(message, state) 
 
 # --- НОВЕ: Обробники кнопок з черги / лобі / гри ---
@@ -1166,10 +1186,11 @@ async def find_match(message: types.Message, state: FSMContext):
     if any(user_id == p[0] for p in matchmaking_queue):
         await message.reply("Ви вже у пошуку! Щоб скасувати: /cancel_match", reply_markup=kb_in_queue)
         return
-        
-    matchmaking_queue.append((user_id, username))
+    
+    # --- ЗМІНЕНО: Додаємо timestamp ---
+    matchmaking_queue.append((user_id, username, time.time()))
     await state.set_state(PlayerState.in_queue)
-    await message.reply("Пошук почався, заждіть... Щоб скасувати: /cancel_match", reply_markup=kb_in_queue)
+    await message.reply("Пошук почався, заждіть... (макс. 2 хв)\nЩоб скасувати: /cancel_match", reply_markup=kb_in_queue)
     
     await notify_queue_updates() 
     
@@ -1372,8 +1393,9 @@ async def leave_room(message: types.Message, state: FSMContext):
             save_rooms()
             return
             
-    logger.info(f"User {user_id} not in any room or queue")
-    await message.reply("Ви не перебуваєте в жодній кімнаті або черзі.", reply_markup=kb_main_menu)
+    if not room_found:
+        logger.info(f"User {user_id} not in any room or queue")
+        await message.reply("Ви не перебуваєте в жодній кімнаті або черзі.", reply_markup=kb_main_menu)
 
 @dp.message(Command("startgame"))
 async def start_game(message: types.Message):
@@ -1543,7 +1565,6 @@ async def early_vote(message: types.Message):
             room['banned_from_voting'].add(user_id)
             room['last_activity'] = time.time()
             try:
-                # --- НОВЕ: Не видаляємо команди, просто повідомляємо ---
                 await bot.send_message(user_id, "Ви ініціювали дострокове голосування. Ви не зможете зробити це знову в цій грі.")
             except Exception as e:
                 logger.error(f"Failed to send early vote notice to user {user_id}: {e}")
@@ -1780,9 +1801,16 @@ async def show_voting_buttons(token):
                             logger.error(f"Failed to send voting timer to user {pid}: {e}")
             await asyncio.sleep(1)
             
-            all_voted = len(room['votes']) == len(room['participants'])
-            if all_voted:
-                break
+            # --- ВИПРАВЛЕННЯ БАГУ /testgame ---
+            if room.get('is_test_game'):
+                # В тестовій грі чекаємо лише на голос адміна (owner)
+                if room['owner'] in room['votes']:
+                    break
+            else:
+                # Звичайна логіка: чекаємо на всіх
+                if len(room['votes']) == len(room['participants']):
+                    break
+            # --- Кінець виправлення ---
                 
         room['last_activity'] = time.time()
         await process_voting_results(token)
@@ -1822,7 +1850,15 @@ async def process_vote(callback_query: types.CallbackQuery):
         logger.info(f"User {user_id} voted for {voted_pid} in room {token}")
         await callback_query.answer("Ваш голос враховано!")
         
-        all_voted = len(room['votes']) == len(room['participants'])
+        # --- ВИПРАВЛЕННЯ БАГУ /testgame (аналогічно до таймера) ---
+        all_voted = False
+        if room.get('is_test_game'):
+            if room['owner'] in room['votes']:
+                all_voted = True
+        else:
+            if len(room['votes']) == len(room['participants']):
+                all_voted = True
+        
         if all_voted:
             await process_voting_results(token)
             
@@ -2012,7 +2048,7 @@ async def handle_room_message(message: types.Message, state: FSMContext):
         user_id = message.from_user.id
         current_time = time.time()
 
-        if user_id != ADMIN_ID: 
+        if user_id not in ADMIN_IDS: # --- ЗМІНЕНО: Перевірка по списку ---
             if user_id not in user_message_times:
                 user_message_times[user_id] = {'timestamps': deque(), 'muted_until': 0, 'warned_spam': False, 'warned_unmuted': False}
             
@@ -2059,7 +2095,7 @@ async def handle_room_message(message: types.Message, state: FSMContext):
                     except Exception: pass
                     return 
                 
-                if user_id != ADMIN_ID:
+                if user_id not in ADMIN_IDS: # --- ЗМІНЕНО: Перевірка по списку ---
                     user_data = user_message_times[user_id]
                     if user_data.get('warned_unmuted', False):
                         user_data['warned_unmuted'] = False
@@ -2145,7 +2181,6 @@ async def end_game(token, result_message: str = None):
         for pid, _, _ in all_participants:
             if pid > 0: 
                 try:
-                    # --- НОВЕ: Встановлюємо клавіатуру та команди головного меню ---
                     if not room.get('is_test_game') and str(token).startswith("auto_"):
                          await bot.send_message(pid, final_message + "/find_match - Шукати нову гру\n/stats - Моя статистика", reply_markup=kb_main_menu)
                     elif pid == owner_id and not room.get('is_test_game'): 
