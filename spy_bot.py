@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 API_TOKEN = os.getenv('BOT_TOKEN')
 if not API_TOKEN:
-    raise ValueError("BOT_TOKEN is not set in environment variables")
+    raise ValueValue("BOT_TOKEN is not set in environment variables")
 
 # --- ЗМІНЕНО: Завантажуємо список адмінів ---
 ADMIN_IDS_STR = os.getenv('ADMIN_ID')
@@ -59,7 +59,7 @@ rooms = {}
 user_message_times = {}
 matchmaking_queue = []  # --- ЗМІНЕНО: Тепер зберігає (user_id, username, timestamp) ---
 maintenance_timer_task = None
-DB_PATH = 'players.db'  # Шлях до нашої бази даних
+DB_PATH = os.getenv('RENDER_DISK_PATH', '') + '/players.db' if os.getenv('RENDER_DISK_PATH') else 'players.db'  # Використовуємо persistent disk на Render
 
 class PlayerState(StatesGroup):
     in_queue = State()
@@ -716,6 +716,27 @@ async def get_database_file(message: types.Message):
     except Exception as e:
         logger.error(f"Failed to send DB file to admin: {e}", exc_info=True)
         await message.reply(f"Не вдалося надіслати файл: {e}")
+
+# НОВА КОМАНДА: Завантаження DB файлу від адміна
+@dp.message(Command("uploaddb"))
+async def upload_database_file(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        logger.warning(f"Non-admin user {message.from_user.id} tried to use /uploaddb")
+        return
+    if not message.document:
+        await message.reply("Будь ласка, надішліть файл players.db як документ.")
+        return
+    file = message.document
+    if file.file_name != 'players.db':
+        await message.reply("Файл повинен бути players.db")
+        return
+    try:
+        await bot.download(file, DB_PATH)
+        await message.reply("База даних успішно оновлена з вашого файлу.")
+        logger.info(f"Admin {message.from_user.id} uploaded new DB file.")
+    except Exception as e:
+        logger.error(f"Failed to upload DB file: {e}", exc_info=True)
+        await message.reply(f"Помилка завантаження файлу: {e}")
 
 @dp.message(Command("getlog"))
 async def get_game_log(message: types.Message):
