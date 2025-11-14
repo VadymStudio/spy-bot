@@ -1726,8 +1726,9 @@ async def show_voting_buttons(token):
         random.shuffle(all_callsigns)
         callsigns_list_str = f"Позивні в грі: {', '.join(all_callsigns)}"
         # --- ФІКС: Змінено роздільник на ':' ---
+        # --- ВИПРАВЛЕНО: Тільки позивні на кнопках ---
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=f"{username} ({callsign})", callback_data=f"vote:{token}:{pid}")]
+            [InlineKeyboardButton(text=f"{callsign}", callback_data=f"vote:{token}:{pid}")]
             for pid, username, callsign in room['participants']
         ])
        
