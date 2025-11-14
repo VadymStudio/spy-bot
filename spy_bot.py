@@ -6,14 +6,13 @@ import json
 import time
 import psutil
 import aiosqlite  # Потрібно для бази даних
+import html  # --- ДОДАНО: Для безпечного форматування HTML ---
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from aiogram import Bot, Dispatcher, types, F  # --- НОВЕ: F для фільтрів тексту ---
-# --- ФІКС: Додаємо StorageKey ---
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.fsm.storage.base import StorageKey
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.filters import Command, StateFilter
-# --- НОВЕ: ReplyKeyboardMarkup ---
 from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton, BotCommand, BotCommandScopeAllPrivateChats,
     FSInputFile, ReplyKeyboardMarkup, KeyboardButton
@@ -37,18 +36,16 @@ API_TOKEN = os.getenv('BOT_TOKEN')
 if not API_TOKEN:
     raise ValueError("BOT_TOKEN is not set in environment variables")
 
-# --- ЗМІНЕНО: Завантажуємо список адмінів ---
 ADMIN_IDS_STR = os.getenv('ADMIN_ID')
 if not ADMIN_IDS_STR:
     raise ValueError("ADMIN_ID is not set in environment variables. Please set it (comma-separated if multiple).")
 
 ADMIN_IDS = [int(admin_id.strip()) for admin_id in ADMIN_IDS_STR.split(',')]
 logger.info(f"Loaded Admin IDs: {ADMIN_IDS}")
-# --- Кінець зміни ---
 
 USE_POLLING = os.getenv('USE_POLLING', 'false').lower() == 'true'
 RENDER_EXTERNAL_HOSTNAME = os.getenv('RENDER_EXTERNAL_HOSTNAME', 'spy-game-bot.onrender.com')
-bot = Bot(token=API_TOKEN)
+bot = Bot(token=API_TOKEN, parse_mode="HTML") # --- ЗМІНЕНО: Встановлюємо HTML як стандартний parse_mode ---
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
@@ -57,9 +54,9 @@ maintenance_mode = False
 active_users = set()
 rooms = {}
 user_message_times = {}
-matchmaking_queue = []  # --- ЗМІНЕНО: Тепер зберігає (user_id, username, timestamp) ---
+matchmaking_queue = []
 maintenance_timer_task = None
-DB_PATH = os.getenv('RENDER_DISK_PATH', '') + '/players.db' if os.getenv('RENDER_DISK_PATH') else 'players.db'  # Використовуємо persistent disk на Render
+DB_PATH = os.getenv('RENDER_DISK_PATH', '') + '/players.db' if os.getenv('RENDER_DISK_PATH') else 'players.db'
 
 class PlayerState(StatesGroup):
     in_queue = State()
@@ -85,13 +82,13 @@ CALLSIGNS = [
     "Натурал", "Санс", "Гетеросексуал", "Рікрол", "Сапорт", "Туалетний Монстр", "456", "Скажений Пельмень"
 ]
 last_save_time = 0
-SAVE_INTERVAL = 10  # Збільшено для меншого навантаження
-ROOM_EXPIRY = 3600  # 1 година
+SAVE_INTERVAL = 10
+ROOM_EXPIRY = 3600
 XP_CIVILIAN_WIN = 10
 XP_SPY_WIN = 20
-MESSAGE_MAX_LENGTH = 120  # НОВЕ: Обмеження на довжину повідомлення
+MESSAGE_MAX_LENGTH = 120
 
-# --- НОВЕ: Визначаємо наші постійні клавіатури ---
+# --- Клавіатури ---
 kb_main_menu = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🎮 Знайти Гру")],
@@ -116,7 +113,7 @@ kb_in_game = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# --- НОВЕ: Визначаємо списки слеш-команд (глобальні, без per-user) ---
+# --- Команди ---
 cmds_default = [
     BotCommand(command="start", description="Головне меню"),
     BotCommand(command="find_match", description="Швидкий пошук гри"),
@@ -127,9 +124,7 @@ cmds_default = [
     BotCommand(command="my_info", description="Моя роль"),
     BotCommand(command="early_vote", description="Дострокове голосування"),
 ]
-# Видалено cmds_in_lobby/cmds_in_game — тепер все в default для простоти
 
-# Логування
 logger.info(f"Using aiohttp version: {aiohttp.__version__}")
 process = psutil.Process()
 logger.info(f"Initial memory usage: {process.memory_info().rss / 1024 / 1024:.2f} MB")
@@ -258,7 +253,7 @@ def save_rooms():
            
             # Видаляємо об'єкти, які не серіалізуються
             room_copy[token].pop('timer_task', None)
-            room_copy[token].pop('spy_guess_timer_task', None)  # Видаляємо новий таймер
+            room_copy[token].pop('spy_guess_timer_task', None)
         with open('rooms.json', 'w') as f:
             json.dump(room_copy, f, indent=4)
         last_save_time = current_time
@@ -478,20 +473,22 @@ async def send_maint_warning(text: str):
     logger.info(f"Sending maintenance warning to {len(all_user_ids)} users: {text}")
     for uid in all_user_ids:
         try:
-            await bot.send_message(uid, text)
+            # --- ВИПРАВЛЕНО: Додано parse_mode="HTML" ---
+            await bot.send_message(uid, text, parse_mode="HTML")
         except Exception:
             pass
 
 async def run_maintenance_timer():
     global maintenance_timer_task
     try:
-        await send_maint_warning("Увага! Заплановані технічні роботи.\nВсі ігри будуть зупинені через **10 хвилин**.")
+        # --- ВИПРАВЛЕНО: Використовуємо <b> для HTML ---
+        await send_maint_warning("Увага! Заплановані технічні роботи.\nВсі ігри будуть зупинені через <b>10 хвилин</b>.")
         await asyncio.sleep(300)  # 5 хв
        
-        await send_maint_warning("Повторне попередження: Технічні роботи почнуться через **5 хвилин**.")
+        await send_maint_warning("Повторне попередження: Технічні роботи почнуться через <b>5 хвилин</b>.")
         await asyncio.sleep(240)  # 4 хв
        
-        await send_maint_warning("Останнє попередження! Технічні роботи почнуться через **1 хвилину**.")
+        await send_maint_warning("Останнє попередження! Технічні роботи почнуться через <b>1 хвилину</b>.")
         await asyncio.sleep(60)  # 1 хв
        
         await send_maint_warning("Починаємо технічні роботи...")
@@ -752,15 +749,24 @@ async def get_recent_games(message: types.Message):
         if not recent_rooms:
             await message.reply("За годину кімнат не створено.")
             return
-        reply_text = "**Нещодавні кімнати (1 год):**\n\n"
+        
+        # --- ВИПРАВЛЕНО: Використання HTML ---
+        reply_text = "<b>Нещодавні кімнати (1 год):</b>\n\n"
         for token, room in sorted(recent_rooms, key=lambda x: x[1].get('created_at', 0), reverse=True):
             status = "В грі" if room.get('game_started') else "В лобі"
             players = len(room.get('participants', []))
-            time_ago = timedelta(seconds=int(current_time - room.get('created_at', 0)))
-            reply_text += f"🔑 **{token}**\n • Статус: {status}\n • Гравців: {players}\n • Створено: {time_ago} тому\n\n"
-        await message.reply(reply_text, parse_mode="Markdown")
+            time_ago = str(timedelta(seconds=int(current_time - room.get('created_at', 0)))) # Конвертуємо в str
+            
+            # Використовуємо <b> для токена, щоб відповідати оригінальному задуму
+            safe_token = html.escape(token)
+            
+            reply_text += f"🔑 <b>{safe_token}</b>\n • Статус: {status}\n • Гравців: {players}\n • Створено: {time_ago} тому\n\n"
+        
+        await message.reply(reply_text, parse_mode="HTML")
+    
     except Exception as e:
         logger.error(f"Recent games failed: {e}")
+        # --- ВИПРАВЛЕНО: Надсилаємо помилку без форматування, щоб уникнути циклу помилок ---
         await message.reply(f"Помилка: {e}")
 
 @dp.message(Command("ban"))
@@ -812,7 +818,8 @@ async def ban_user(message: types.Message):
             ban_message_user = f"Бан на {remaining}."
         await message.reply(ban_message)
         try:
-            await bot.send_message(target_id, f"Вас забанено. {ban_message_user}", parse_mode="Markdown")
+            # --- ВИПРАВЛЕНО: Використовуємо parse_mode="HTML" (або ніякий, тут немає форматування) ---
+            await bot.send_message(target_id, f"Вас забанено. {ban_message_user}")
         except Exception:
             pass
     except Exception as e:
@@ -858,7 +865,7 @@ async def unban_user(message: types.Message):
         logger.error(f"Unban failed: {e}")
         await message.reply(f"Помилка: {e}")
 
-# --- ФУНКЦІЇ МАТЧМЕЙКІНГУ (без змін) ---
+# --- ФУНКЦІЇ МАТЧМЕЙКІНГУ ---
 async def notify_queue_updates():
     queue_size = len(matchmaking_queue)
     if queue_size == 0:
@@ -903,7 +910,6 @@ async def matchmaking_processor():
             if maintenance_mode:
                 continue
             current_time = time.time()
-            # Таймаут матчмейкінгу (2 хвилини)
             timed_out_users = [p for p in matchmaking_queue if current_time - p[2] > 120]
             matchmaking_queue = [p for p in matchmaking_queue if current_time - p[2] <= 120]
             if timed_out_users:
@@ -939,7 +945,7 @@ async def matchmaking_processor():
         except Exception as e:
             logger.error(f"Matchmaking error: {e}")
 
-# --- Команда /stats (без змін) ---
+# --- Команда /stats ---
 @dp.message(Command("stats"))
 @dp.message(F.text == "📊 Моя Статистика")
 async def show_stats(message: types.Message, state: FSMContext):
@@ -954,23 +960,25 @@ async def show_stats(message: types.Message, state: FSMContext):
         level, xp_needed_for_level, xp_in_current_level, _ = get_level_from_xp(total_xp)
         total_wins = spy_wins + civilian_wins
         winrate = (total_wins / games_played * 100) if games_played > 0 else 0
+        
+        # --- ВИПРАВЛЕНО: Використання HTML ---
         stats_text = (
-            f"📊 **Ваша статистика** 📊\n\n"
-            f"👤 **Нік:** {username}\n"
-            f"🎖 **Рівень:** {level}\n"
-            f"✨ **Досвід (XP):** {xp_in_current_level} / {xp_needed_for_level}\n"
+            f"📊 <b>Ваша статистика</b> 📊\n\n"
+            f"👤 <b>Нік:</b> {html.escape(username)}\n"
+            f"🎖 <b>Рівень:</b> {level}\n"
+            f"✨ <b>Досвід (XP):</b> {xp_in_current_level} / {xp_needed_for_level}\n"
             f"*(Всього: {total_xp} XP)*\n"
-            f"🏆 **Вінрейт:** {winrate:.1f}% (всього перемог: {total_wins})\n"
-            f"🕹 **Всього ігор:** {games_played}\n\n"
-            f"🕵️ **Перемог за Шпигуна:** {spy_wins}\n"
-            f"👨‍🌾 **Перемог за Мирного:** {civilian_wins}"
+            f"🏆 <b>Вінрейт:</b> {winrate:.1f}% (всього перемог: {total_wins})\n"
+            f"🕹 <b>Всього ігор:</b> {games_played}\n\n"
+            f"🕵️ <b>Перемог за Шпигуна:</b> {spy_wins}\n"
+            f"👨‍🌾 <b>Перемог за Мирного:</b> {civilian_wins}"
         )
-        await message.reply(stats_text, parse_mode="Markdown")
+        await message.reply(stats_text, parse_mode="HTML")
     except Exception as e:
         logger.error(f"Stats failed for {user_id}: {e}")
         await message.reply("Не вдалося завантажити статистику.")
 
-# --- Основні команди (без per-user commands) ---
+# --- Основні команди ---
 @dp.message(Command("start"))
 @dp.message(F.text == "❓ Допомога")
 async def send_welcome(message: types.Message, state: FSMContext):
@@ -985,8 +993,13 @@ async def send_welcome(message: types.Message, state: FSMContext):
     )
     await message.reply(menu_text, reply_markup=kb_main_menu)
     if message.from_user.id in ADMIN_IDS:
+        # --- ВИПРАВЛЕНО: Повернуто всі команди згідно скріншоту (окрім /check_webhook) ---
         await message.answer(
-            "Адмін команди: /maintenance_on, /maint_timer, /testgame, /whois, /getdb, /updatedb, /getlog, /recentgames, /ban, /unban"
+            "Вітаю, Адмін. Тобі доступні спец. команди (тільки через слеш-меню):\n"
+            "/maintenance_on, /maintenance_off, /maint_timer, "
+            "/cancel_maint, /testgame, "
+            "/testgamespy, /whois, /getdb, /updatedb, /getlog, "
+            "/recentgames, /ban, /unban"
         )
 
 @dp.message(Command("find_match"))
@@ -1032,7 +1045,6 @@ async def create_room(message: types.Message, state: FSMContext):
     active_users.add(message.from_user.id)
     user_id = message.from_user.id
     username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
-    # Вийти з поточної кімнати, якщо є
     for token, room in list(rooms.items()):
         if user_id in [p[0] for p in room['participants']]:
             if room['game_started']:
@@ -1061,10 +1073,12 @@ async def create_room(message: types.Message, state: FSMContext):
     }
     save_rooms()
     logger.info(f"Room created: {room_token}")
+    
+    # --- ВИПРАВЛЕНО: Використання <code> для токена та parse_mode="HTML" ---
     await message.reply(
-        f"Кімната створена! Токен: `{room_token}`\n"
+        f"Кімната створена! Токен: <code>{html.escape(room_token)}</code>\n"
         "Поділіться токеном. /startgame для запуску.",
-        parse_mode="Markdown", reply_markup=kb_in_lobby
+        parse_mode="HTML", reply_markup=kb_in_lobby
     )
 
 @dp.message(Command("join"))
@@ -1717,7 +1731,8 @@ async def handle_room_message(message: types.Message, state: FSMContext):
                     user_data['warned_unmuted'] = False
                     await message.reply("Тепер видно.")
                 callsign = next((c for p, u, c in room['participants'] if p == user_id), None)
-                msg = f"{callsign}: {message.text}" if (room['game_started'] or room['last_minute_chat']) and callsign else f"@{username_clean}: {message.text}"
+                msg_text = html.escape(message.text) # Екрануємо HTML-теги від користувача
+                msg = f"{callsign}: {msg_text}" if (room['game_started'] or room['last_minute_chat']) and callsign else f"@{username_clean}: {msg_text}"
                 room['messages'].append(msg)
                 room['messages'] = room['messages'][-100:]
                 for pid, _, _ in room['participants']:
@@ -1762,14 +1777,17 @@ async def end_game(token, result_message: str = None):
         reveal_message = "\n\nПозивні:\n"
         for pid, username, callsign in room.get('participants', []):
             if pid > 0:
-                reveal_message += f"• {username}: '{callsign}'\n"
-        final_message += reveal_message + f"\nКімната: `{token}`\n/leave — вийти\n/stats — статистика"
+                reveal_message += f"• {html.escape(username)}: '{html.escape(callsign)}'\n"
+        
+        # --- ВИПРАВЛЕНО: Використання <code> для токена ---
+        final_message += reveal_message + f"\nКімната: <code>{html.escape(token)}</code>\n/leave — вийти\n/stats — статистика"
         owner_id = room['owner']
         for pid, _, _ in room.get('participants', []):
             if pid > 0:
                 try:
                     extra = "\n/find_match — нова гра" if str(token).startswith("auto_") else "\n/startgame — нова гра" if pid == owner_id else ""
-                    await bot.send_message(pid, final_message + extra, reply_markup=kb_main_menu, parse_mode="Markdown")
+                    # --- ВИПРАВЛЕНО: Використання parse_mode="HTML" ---
+                    await bot.send_message(pid, final_message + extra, reply_markup=kb_main_menu, parse_mode="HTML")
                 except Exception as e:
                     logger.error(f"End game send failed: {e}")
         room['game_started'] = False
