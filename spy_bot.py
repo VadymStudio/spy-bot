@@ -720,26 +720,54 @@ async def get_database_file(message: types.Message):
         logger.error(f"Failed to send DB file to admin: {e}", exc_info=True)
         await message.reply(f"Не вдалося надіслати файл: {e}")
 
-# НОВА КОМАНДА: Завантаження DB файлу від адміна
-@dp.message(Command("uploaddb"))
-async def upload_database_file(message: types.Message):
+# --- ДОДАЙ ЦІ ДВІ ФУНКЦІЇ ---
+
+@dp.message(Command("updatedb"))
+async def request_db_update(message: types.Message, state: FSMContext):
+    """
+    (ТІЛЬКИ АДМІН) Активує режим очікування файлу .db
+    """
     if message.from_user.id not in ADMIN_IDS:
-        logger.warning(f"Non-admin user {message.from_user.id} tried to use /uploaddb")
+        return # Ігноруємо не-адмінів
+
+    await message.reply("Переводжу в режим оновлення бази. Будь ласка, надішліть файл `players.db`.\n"
+                        "УВАГА: Поточна база на сервері буде **ПОВНІСТЮ ЗАМІНЕНА**.\n"
+                        "Для скасування просто нічого не надсилайте або напишіть /cancel.")
+    await state.set_state(AdminState.waiting_for_db_file)
+
+@dp.message(F.document, StateFilter(AdminState.waiting_for_db_file))
+async def process_db_upload(message: types.Message, state: FSMContext):
+    """
+    (ТІЛЬКИ АДМІН) Ловить файл у стані waiting_for_db_file
+    """
+    if message.from_user.id not in ADMIN_IDS:
+        await state.clear()
+        return # Подвійна перевірка
+
+    if message.document.file_name != 'players.db':
+        await message.reply(f"❌ Помилка. Очікувався файл `players.db`, але отримано `{message.document.file_name}`.\nОновлення скасовано.")
+        await state.clear()
         return
-    if not message.document:
-        await message.reply("Будь ласка, надішліть файл players.db як документ.")
-        return
-    file = message.document
-    if file.file_name != 'players.db':
-        await message.reply("Файл повинен бути players.db")
-        return
+
     try:
-        await bot.download(file, DB_PATH)
-        await message.reply("База даних успішно оновлена з вашого файлу.")
-        logger.info(f"Admin {message.from_user.id} uploaded new DB file.")
+        await message.reply(f"✅ Отримав `{message.document.file_name}`. Починаю завантаження на сервер...")
+        
+        # Завантажуємо файл з серверів Telegram
+        # file_info = await bot.get_file(message.document.file_id)
+        
+        # Зберігаємо файл поверх старого DB_PATH (players.db)
+        await bot.download(message.document, DB_PATH) 
+        
+        await message.reply("🚀 Успіх! Базу даних на сервері оновлено. "
+                            "Зміни вступлять в силу для нових ігор та гравців. "
+                            "Для 100% ефекту краще перезапустити бота (/maint_timer).")
+        logger.info(f"Admin {message.from_user.id} successfully updated players.db")
+
     except Exception as e:
-        logger.error(f"Failed to upload DB file: {e}", exc_info=True)
-        await message.reply(f"Помилка завантаження файлу: {e}")
+        logger.error(f"Failed to update DB: {e}", exc_info=True)
+        await message.reply(f"Помилка під час збереження файлу: {e}")
+    finally:
+        await state.clear()
 
 @dp.message(Command("getlog"))
 async def get_game_log(message: types.Message):
@@ -1107,7 +1135,7 @@ async def send_welcome(message: types.Message, state: FSMContext):
         await message.answer(
             "Вітаю, Адмін. Тобі доступні спец. команди (тільки через слеш-меню):\n"
             "/maintenance_on, /maintenance_off, /maint_timer, /cancel_maint, "
-            "/check_webhook, /testgame, /testgamespy, /whois, /getdb, /getlog, /recentgames, /ban, /unban"
+            "/check_webhook, /testgame, /testgamespy, /whois, /getdb, /updatedb, /getlog, /recentgames, /ban, /unban"
         )
 
 @dp.message(Command("find_match"))
