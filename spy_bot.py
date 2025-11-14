@@ -1032,6 +1032,7 @@ async def show_stats(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
     try:
+        await get_player_stats(user_id, username)
         stats = await get_player_stats(user_id, username)
         _, _, total_xp, games_played, spy_wins, civilian_wins, _ = stats
        
