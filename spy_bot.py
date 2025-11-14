@@ -50,11 +50,7 @@ USE_POLLING = os.getenv('USE_POLLING', 'false').lower() == 'true'
 RENDER_EXTERNAL_HOSTNAME = os.getenv('RENDER_EXTERNAL_HOSTNAME', 'spy-game-bot.onrender.com')
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
-<<<<<<< HEAD
 dp = Dispatcher(storage=storage)
-=======
-dp = Dispatcher(bot=bot, storage=storage)
->>>>>>> 85040921045f5a746be63d3200977620d531640b
 
 # --- Глобальні змінні ---
 maintenance_mode = False
@@ -89,11 +85,7 @@ CALLSIGNS = [
     "Натурал", "Санс", "Гетеросексуал", "Рікрол", "Сапорт", "Туалетний Монстр", "456", "Скажений Пельмень"
 ]
 last_save_time = 0
-<<<<<<< HEAD
 SAVE_INTERVAL = 10  # Збільшено для меншого навантаження
-=======
-SAVE_INTERVAL = 5
->>>>>>> 85040921045f5a746be63d3200977620d531640b
 ROOM_EXPIRY = 3600  # 1 година
 XP_CIVILIAN_WIN = 10
 XP_SPY_WIN = 20
@@ -124,11 +116,7 @@ kb_in_game = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-<<<<<<< HEAD
 # --- НОВЕ: Визначаємо списки слеш-команд (глобальні, без per-user) ---
-=======
-# --- НОВЕ: Визначаємо списки слеш-команд ---
->>>>>>> 85040921045f5a746be63d3200977620d531640b
 cmds_default = [
     BotCommand(command="start", description="Головне меню"),
     BotCommand(command="find_match", description="Швидкий пошук гри"),
@@ -139,32 +127,7 @@ cmds_default = [
     BotCommand(command="my_info", description="Моя роль"),
     BotCommand(command="early_vote", description="Дострокове голосування"),
 ]
-<<<<<<< HEAD
 # Видалено cmds_in_lobby/cmds_in_game — тепер все в default для простоти
-=======
-
-# --- НОВЕ: Хелпер-функції для встановлення команд ---
-async def set_default_commands_for_user(bot: Bot, user_id: int):
-    """Встановлює дефолтний набір команд для юзера (головне меню)."""
-    try:
-        await bot.set_my_commands(cmds_default, scope=BotCommandScopeChat(chat_id=user_id))
-    except Exception as e:
-        logger.warning(f"Failed to set default commands for {user_id}: {e}")
-
-async def set_lobby_commands_for_user(bot: Bot, user_id: int):
-    """Встановлює команди для лобі."""
-    try:
-        await bot.set_my_commands(cmds_in_lobby, scope=BotCommandScopeChat(chat_id=user_id))
-    except Exception as e:
-        logger.warning(f"Failed to set lobby commands for {user_id}: {e}")
-
-async def set_game_commands_for_user(bot: Bot, user_id: int):
-    """Встановлює команди для гри."""
-    try:
-        await bot.set_my_commands(cmds_in_game, scope=BotCommandScopeChat(chat_id=user_id))
-    except Exception as e:
-        logger.warning(f"Failed to set game commands for {user_id}: {e}")
->>>>>>> 85040921045f5a746be63d3200977620d531640b
 
 # Логування
 logger.info(f"Using aiohttp version: {aiohttp.__version__}")
@@ -196,11 +159,7 @@ async def db_init():
             else:
                 raise e
         await db.commit()
-<<<<<<< HEAD
     logger.info(f"Database initialized at {DB_PATH}")
-=======
-    logger.info("Database initialized successfully.")
->>>>>>> 85040921045f5a746be63d3200977620d531640b
 
 async def get_player_stats(user_id, username):
     """Отримує статистику гравця (включаючи бан). Створює або оновлює, якщо не існує."""
@@ -360,29 +319,10 @@ async def cleanup_rooms():
             save_rooms()
             await asyncio.sleep(300)
         except Exception as e:
-<<<<<<< HEAD
             logger.error(f"Cleanup rooms error: {e}")
             await asyncio.sleep(300)
 
 # --- Функції для Render (Webhook, без keep_alive) ---
-=======
-            logger.error(f"Cleanup rooms error: {e}", exc_info=True)
-            await asyncio.sleep(300)
-
-# --- Функції для Render (Keep-alive, Webhook) ---
-async def keep_alive():
-    async with ClientSession() as session:
-        while True:
-            try:
-                webhook_host = os.getenv('RENDER_EXTERNAL_HOSTNAME', 'spy-game-bot.onrender.com')
-                logger.info(f"Sending keep-alive ping to https://{webhook_host}/health")
-                async with session.get(f"https://{webhook_host}/health") as resp:
-                    logger.info(f"Keep-alive ping response: {resp.status}")
-            except Exception as e:
-                logger.error(f"Keep-alive error: {e}", exc_info=True)
-            await asyncio.sleep(300)
-
->>>>>>> 85040921045f5a746be63d3200977620d531640b
 async def health_check(request):
     logger.info(f"Health check: {request.method} {request.path}")
     try:
@@ -470,11 +410,7 @@ def parse_ban_time(time_str: str) -> int:
        
     return current_time + duration_seconds
 
-<<<<<<< HEAD
 # --- Команди Адміністратора (скорочено, без змін) ---
-=======
-# --- Команди Адміністратора ---
->>>>>>> 85040921045f5a746be63d3200977620d531640b
 async def check_maintenance(message: types.Message):
     if maintenance_mode and message.from_user.id not in ADMIN_IDS:
         await message.reply("Бот на технічному обслуговуванні. Зачекайте, будь ласка.")
@@ -740,7 +676,6 @@ async def get_database_file(message: types.Message):
         logger.error(f"Failed to send DB file: {e}")
         await message.reply(f"Не вдалося надіслати файл: {e}")
 
-<<<<<<< HEAD
 @dp.message(Command("updatedb"))
 async def request_db_update(message: types.Message, state: FSMContext):
     if message.from_user.id not in ADMIN_IDS:
@@ -748,26 +683,10 @@ async def request_db_update(message: types.Message, state: FSMContext):
     await message.reply("Переводжу в режим оновлення бази. Надішліть файл `players.db`.\n"
                         "УВАГА: Поточна база буде **ПОВНІСТЮ ЗАМІНЕНА**.\n"
                         "Для скасування: /cancel.")
-=======
-# --- ДОДАЙ ЦІ ДВІ ФУНКЦІЇ ---
-
-@dp.message(Command("updatedb"))
-async def request_db_update(message: types.Message, state: FSMContext):
-    """
-    (ТІЛЬКИ АДМІН) Активує режим очікування файлу .db
-    """
-    if message.from_user.id not in ADMIN_IDS:
-        return # Ігноруємо не-адмінів
-
-    await message.reply("Переводжу в режим оновлення бази. Будь ласка, надішліть файл `players.db`.\n"
-                        "УВАГА: Поточна база на сервері буде **ПОВНІСТЮ ЗАМІНЕНА**.\n"
-                        "Для скасування просто нічого не надсилайте або напишіть /cancel.")
->>>>>>> 85040921045f5a746be63d3200977620d531640b
     await state.set_state(AdminState.waiting_for_db_file)
 
 @dp.message(F.document, StateFilter(AdminState.waiting_for_db_file))
 async def process_db_upload(message: types.Message, state: FSMContext):
-<<<<<<< HEAD
     if message.from_user.id not in ADMIN_IDS:
         await state.clear()
         return
@@ -783,37 +702,6 @@ async def process_db_upload(message: types.Message, state: FSMContext):
     except Exception as e:
         logger.error(f"DB update failed: {e}")
         await message.reply(f"Помилка: {e}")
-=======
-    """
-    (ТІЛЬКИ АДМІН) Ловить файл у стані waiting_for_db_file
-    """
-    if message.from_user.id not in ADMIN_IDS:
-        await state.clear()
-        return # Подвійна перевірка
-
-    if message.document.file_name != 'players.db':
-        await message.reply(f"❌ Помилка. Очікувався файл `players.db`, але отримано `{message.document.file_name}`.\nОновлення скасовано.")
-        await state.clear()
-        return
-
-    try:
-        await message.reply(f"✅ Отримав `{message.document.file_name}`. Починаю завантаження на сервер...")
-        
-        # Завантажуємо файл з серверів Telegram
-        # file_info = await bot.get_file(message.document.file_id)
-        
-        # Зберігаємо файл поверх старого DB_PATH (players.db)
-        await bot.download(message.document, DB_PATH) 
-        
-        await message.reply("🚀 Успіх! Базу даних на сервері оновлено. "
-                            "Зміни вступлять в силу для нових ігор та гравців. "
-                            "Для 100% ефекту краще перезапустити бота (/maint_timer).")
-        logger.info(f"Admin {message.from_user.id} successfully updated players.db")
-
-    except Exception as e:
-        logger.error(f"Failed to update DB: {e}", exc_info=True)
-        await message.reply(f"Помилка під час збереження файлу: {e}")
->>>>>>> 85040921045f5a746be63d3200977620d531640b
     finally:
         await state.clear()
 
@@ -850,13 +738,8 @@ async def get_game_log(message: types.Message):
         await message.reply_document(log_file, caption=f"Лог {token}")
         os.remove(log_filename)
     except Exception as e:
-<<<<<<< HEAD
         logger.error(f"Log generation failed for {token}: {e}")
         await message.reply(f"Помилка: {e}")
-=======
-        logger.error(f"Failed to generate or send log for token {token}: {e}", exc_info=True)
-        await message.reply(f"Помилка при створенні логу: {e}")
->>>>>>> 85040921045f5a746be63d3200977620d531640b
 
 @dp.message(Command("recentgames"))
 async def get_recent_games(message: types.Message):
@@ -933,13 +816,8 @@ async def ban_user(message: types.Message):
         except Exception:
             pass
     except Exception as e:
-<<<<<<< HEAD
         logger.error(f"Ban failed: {e}")
         await message.reply(f"Помилка: {e}")
-=======
-        logger.error(f"Failed to ban user: {e}", exc_info=True)
-        await message.reply(f"Помилка при бані: {e}")
->>>>>>> 85040921045f5a746be63d3200977620d531640b
 
 @dp.message(Command("unban"))
 async def unban_user(message: types.Message):
@@ -977,17 +855,10 @@ async def unban_user(message: types.Message):
         except Exception:
             pass
     except Exception as e:
-<<<<<<< HEAD
         logger.error(f"Unban failed: {e}")
         await message.reply(f"Помилка: {e}")
 
 # --- ФУНКЦІЇ МАТЧМЕЙКІНГУ (без змін) ---
-=======
-        logger.error(f"Failed to unban user: {e}", exc_info=True)
-        await message.reply(f"Помилка при розбані: {e}")
-
-# --- ФУНКЦІЇ МАТЧМЕЙКІНГУ ---
->>>>>>> 85040921045f5a746be63d3200977620d531640b
 async def notify_queue_updates():
     queue_size = len(matchmaking_queue)
     if queue_size == 0:
@@ -1039,12 +910,7 @@ async def matchmaking_processor():
                 logger.info(f"Timing out {len(timed_out_users)} users.")
                 for pid, username, _ in timed_out_users:
                     try:
-<<<<<<< HEAD
                         await bot.send_message(pid, "Час пошуку вичерпано.", reply_markup=kb_main_menu)
-=======
-                        await bot.send_message(pid, "Час пошуку вичерпано. Спробуйте ще раз пізніше.", reply_markup=kb_main_menu)
-                        await set_default_commands_for_user(bot, pid)
->>>>>>> 85040921045f5a746be63d3200977620d531640b
                         key = StorageKey(bot_id=bot.id, chat_id=pid, user_id=pid)
                         await dp.storage.set_state(key=key, state=None)
                     except Exception as e:
@@ -1071,15 +937,9 @@ async def matchmaking_processor():
                 matchmaking_queue.extend(players_to_process)
                 await notify_queue_updates()
         except Exception as e:
-<<<<<<< HEAD
             logger.error(f"Matchmaking error: {e}")
 
 # --- Команда /stats (без змін) ---
-=======
-            logger.error(f"Matchmaking processor error: {e}", exc_info=True)
-
-# --- Команда /stats (ПЕРЕНЕСЕНО ВГОРУ) ---
->>>>>>> 85040921045f5a746be63d3200977620d531640b
 @dp.message(Command("stats"))
 @dp.message(F.text == "📊 Моя Статистика")
 async def show_stats(message: types.Message, state: FSMContext):
@@ -1089,15 +949,8 @@ async def show_stats(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
     try:
-        await get_player_stats(user_id, username)
         stats = await get_player_stats(user_id, username)
         _, _, total_xp, games_played, spy_wins, civilian_wins, _ = stats
-<<<<<<< HEAD
-=======
-       
-        # --- ФІКС: Повідомлення для новачків ---
-   
->>>>>>> 85040921045f5a746be63d3200977620d531640b
         level, xp_needed_for_level, xp_in_current_level, _ = get_level_from_xp(total_xp)
         total_wins = spy_wins + civilian_wins
         winrate = (total_wins / games_played * 100) if games_played > 0 else 0
@@ -1114,17 +967,10 @@ async def show_stats(message: types.Message, state: FSMContext):
         )
         await message.reply(stats_text, parse_mode="Markdown")
     except Exception as e:
-<<<<<<< HEAD
         logger.error(f"Stats failed for {user_id}: {e}")
         await message.reply("Не вдалося завантажити статистику.")
 
 # --- Основні команди (без per-user commands) ---
-=======
-        logger.error(f"Failed to get stats for {user_id}: {e}", exc_info=True)
-        await message.reply("Не вдалося завантажити вашу статистику. Спробуйте пізніше.")
-
-# --- Основні Ігрові Команди (Розділені на Текст та Слеш) ---
->>>>>>> 85040921045f5a746be63d3200977620d531640b
 @dp.message(Command("start"))
 @dp.message(F.text == "❓ Допомога")
 async def send_welcome(message: types.Message, state: FSMContext):
@@ -1140,13 +986,7 @@ async def send_welcome(message: types.Message, state: FSMContext):
     await message.reply(menu_text, reply_markup=kb_main_menu)
     if message.from_user.id in ADMIN_IDS:
         await message.answer(
-<<<<<<< HEAD
             "Адмін команди: /maintenance_on, /maint_timer, /testgame, /whois, /getdb, /updatedb, /getlog, /recentgames, /ban, /unban"
-=======
-            "Вітаю, Адмін. Тобі доступні спец. команди (тільки через слеш-меню):\n"
-            "/maintenance_on, /maintenance_off, /maint_timer, /cancel_maint, "
-            "/check_webhook, /testgame, /testgamespy, /whois, /getdb, /updatedb, /getlog, /recentgames, /ban, /unban"
->>>>>>> 85040921045f5a746be63d3200977620d531640b
         )
 
 @dp.message(Command("find_match"))
@@ -1168,10 +1008,6 @@ async def find_match(message: types.Message, state: FSMContext):
     await state.set_state(PlayerState.in_queue)
     await message.reply("Пошук... (макс. 2 хв). /cancel_match для скасування", reply_markup=kb_in_queue)
     await notify_queue_updates()
-<<<<<<< HEAD
-=======
-   
->>>>>>> 85040921045f5a746be63d3200977620d531640b
 
 @dp.message(Command("cancel_match"), StateFilter(PlayerState.in_queue))
 @dp.message(F.text == "❌ Скасувати Пошук", StateFilter(PlayerState.in_queue))
@@ -1230,10 +1066,6 @@ async def create_room(message: types.Message, state: FSMContext):
         "Поділіться токеном. /startgame для запуску.",
         parse_mode="Markdown", reply_markup=kb_in_lobby
     )
-<<<<<<< HEAD
-=======
-    await set_lobby_commands_for_user(bot, user_id)
->>>>>>> 85040921045f5a746be63d3200977620d531640b
 
 @dp.message(Command("join"))
 @dp.message(F.text == "🤝 Приєднатися")
@@ -1253,11 +1085,7 @@ async def join_room(message: types.Message, state: FSMContext):
             return
     await message.answer("Введіть токен:", reply_markup=types.ReplyKeyboardRemove())
     await state.set_state(PlayerState.waiting_for_token)
-<<<<<<< HEAD
     logger.info(f"User {user_id} prompted for token")
-=======
-    logger.info(f"User {user_id} prompted for room token")
->>>>>>> 85040921045f5a746be63d3200977620d531640b
 
 @dp.message(StateFilter(PlayerState.waiting_for_token))
 async def process_token(message: types.Message, state: FSMContext):
@@ -1293,11 +1121,7 @@ async def process_token(message: types.Message, state: FSMContext):
     await state.clear()
 
 @dp.message(Command("leave"))
-<<<<<<< HEAD
 @dp.message(F.text.startswith("🚪 Покинути"))
-=======
-@dp.message(F.text.startswith("🚪 Покинути"))  # Ловить "Лобі" і "Гру"
->>>>>>> 85040921045f5a746be63d3200977620d531640b
 async def leave_room(message: types.Message, state: FSMContext):
     if await check_ban_and_reply(message): return
     if await check_maintenance(message):
@@ -1338,12 +1162,7 @@ async def leave_room(message: types.Message, state: FSMContext):
             save_rooms()
             return
     if not room_found:
-<<<<<<< HEAD
         await message.reply("Ви не в кімнаті.", reply_markup=kb_main_menu)
-=======
-        logger.info(f"User {user_id} not in any room or queue")
-        await message.reply("Ви не перебуваєте в жодній кімнаті або черзі.", reply_markup=kb_main_menu)
->>>>>>> 85040921045f5a746be63d3200977620d531640b
 
 @dp.message(Command("startgame"))
 async def start_game(message: types.Message):
@@ -1369,13 +1188,7 @@ async def start_game(message: types.Message):
                 return
             await start_game_logic(room, token)
             return
-<<<<<<< HEAD
     await message.reply("Ви не в кімнаті.")
-=======
-           
-    logger.info(f"User {user_id} not in any room for /startgame")
-    await message.reply("Ви не перебуваєте в жодній кімнаті.")
->>>>>>> 85040921045f5a746be63d3200977620d531640b
 
 async def start_game_logic(room, token, admin_is_spy: bool = False):
     logger.info(f"Starting game in {token}...")
@@ -1396,11 +1209,7 @@ async def start_game_logic(room, token, admin_is_spy: bool = False):
             room['spy'] = room['owner']
         else:
             bot_ids = [pid for pid in participant_ids if pid < 0]
-<<<<<<< HEAD
             room['spy'] = random.choice(bot_ids) if bot_ids else room['owner']
-=======
-            room['spy'] = random.choice(bot_ids) if bot_ids else room['owner']  # Якщо ботів нема, адмін - шпигун
->>>>>>> 85040921045f5a746be63d3200977620d531640b
     else:
         room['spy'] = random.choice([p[0] for p in room['participants']])
     room['banned_from_voting'] = set()
@@ -1412,11 +1221,7 @@ async def start_game_logic(room, token, admin_is_spy: bool = False):
     room['votes_for'] = 0
     room['votes_against'] = 0
     room['last_activity'] = time.time()
-<<<<<<< HEAD
     room['results_processed'] = False
-=======
-    room['results_processed'] = False  # Скидаємо прапорець
->>>>>>> 85040921045f5a746be63d3200977620d531640b
     save_rooms()
     logger.info(f"Game started in {token}, spy: {room['spy']}, location: {room['location']}")
     player_count = len(room['participants'])
@@ -1460,24 +1265,12 @@ async def my_info(message: types.Message):
         if user_id == user_room['spy']:
             await bot.send_message(user_id, "Ви - ШПИГУН. 🤫")
         else:
-<<<<<<< HEAD
             await bot.send_message(user_id, f"Ви - Мирний. 😇\nЛокація: {user_room['location']}")
-=======
-            await bot.send_message(user_id, f"Нагадуємо: Ви - Мирний. 😇\nЛокація: {user_room['location']}")
-           
->>>>>>> 85040921045f5a746be63d3200977620d531640b
         if message.text.startswith("/"):
             await message.answer("Нагадування в ПП.", reply_markup=kb_in_game)
     except Exception as e:
-<<<<<<< HEAD
         logger.error(f"My info failed for {user_id}: {e}")
         await message.reply("Напишіть боту в ПП.")
-=======
-        logger.error(f"Failed to send /my_info to {user_id}: {e}")
-        try:
-            await message.reply("Не вдалося надіслати нагадування. Можливо, ви не почали чат з ботом? Напишіть йому в ПП.")
-        except Exception: pass
->>>>>>> 85040921045f5a746be63d3200977620d531640b
 
 @dp.message(Command("early_vote"))
 @dp.message(F.text == "🗳️ Достр. Голосування")
@@ -1513,17 +1306,9 @@ async def early_vote(message: types.Message):
             except Exception as e:
                 logger.error(f"Early vote notice failed: {e}")
             save_rooms()
-<<<<<<< HEAD
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="✅ За завершення", callback_data=f"early_vote_for:{token}")],
                 [InlineKeyboardButton(text="❌ Продовжити", callback_data=f"early_vote_against:{token}")]
-=======
-           
-            # --- ВИПРАВЛЕНО: Клавіатура для За/Проти, а не для гравців ---
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="✅ За дострокове завершення", callback_data=f"early_vote_for:{token}")],
-                [InlineKeyboardButton(text="❌ Продовжити гру", callback_data=f"early_vote_against:{token}")]
->>>>>>> 85040921045f5a746be63d3200977620d531640b
             ])
             for pid, _, _ in room['participants']:
                 if pid > 0:
@@ -1532,12 +1317,7 @@ async def early_vote(message: types.Message):
                     except: pass
             asyncio.create_task(early_vote_timer(token))
             return
-<<<<<<< HEAD
     await message.reply("Ви не в кімнаті.")
-=======
-           
-    await message.reply("Ви не перебуваєте в жодній кімнаті.")
->>>>>>> 85040921045f5a746be63d3200977620d531640b
 
 async def early_vote_timer(token):
     await asyncio.sleep(15)
@@ -1578,20 +1358,11 @@ async def finalize_early_vote(token):
 async def early_vote_callback(callback: types.CallbackQuery):
     if await check_ban_and_reply(callback): return
     user_id = callback.from_user.id
-<<<<<<< HEAD
     data_parts = callback.data.split(':')
     if len(data_parts) < 2:
         await callback.answer("Помилка!")
         return
     token = data_parts[-1]
-=======
-    # --- ФІКС: Парсинг з ':' ---
-    data_parts = callback.data.split(':')
-    if len(data_parts) < 2:
-        await callback.answer("Помилка даних!")
-        return
-    token = data_parts[-1]  # Останній елемент - токен
->>>>>>> 85040921045f5a746be63d3200977620d531640b
     room = rooms.get(token)
     if not room or user_id not in [p[0] for p in room['participants']]:
         await callback.answer("Не в грі!")
@@ -1670,11 +1441,7 @@ async def run_timer(token):
         if room:
             room['game_started'] = False
             room['last_activity'] = time.time()
-<<<<<<< HEAD
             await end_game(token, "Помилка таймера.")
-=======
-            await end_game(token, "Помилка таймера. Гру завершено.")
->>>>>>> 85040921045f5a746be63d3200977620d531640b
 
 async def show_voting_buttons(token):
     try:
@@ -1684,13 +1451,7 @@ async def show_voting_buttons(token):
         room['last_activity'] = time.time()
         all_callsigns = [c for _, _, c in room['participants']]
         random.shuffle(all_callsigns)
-<<<<<<< HEAD
         callsigns_list_str = f"Позивні: {', '.join(all_callsigns)}"
-=======
-        callsigns_list_str = f"Позивні в грі: {', '.join(all_callsigns)}"
-        # --- ФІКС: Змінено роздільник на ':' ---
-        # --- ВИПРАВЛЕНО: Тільки позивні на кнопках ---
->>>>>>> 85040921045f5a746be63d3200977620d531640b
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text=f"{callsign}", callback_data=f"vote:{token}:{pid}")]
             for pid, username, callsign in room['participants']
@@ -1716,13 +1477,8 @@ async def show_voting_buttons(token):
                         logger.error(f"Voting keyboard failed: {e}")
         asyncio.create_task(voting_timer_task(token))
     except Exception as e:
-<<<<<<< HEAD
         logger.error(f"Voting buttons error in {token}: {e}")
         await end_game(token, "Помилка голосування.")
-=======
-        logger.error(f"Show voting buttons error in room {token}: {e}", exc_info=True)
-        await end_game(token, "Помилка при запуску голосування.")
->>>>>>> 85040921045f5a746be63d3200977620d531640b
 
 async def voting_timer_task(token):
     await asyncio.sleep(20)
@@ -1746,13 +1502,7 @@ async def voting_timer_task(token):
 @dp.callback_query(lambda c: c.data.startswith('vote:'))
 async def process_vote(callback_query: types.CallbackQuery):
     if await check_ban_and_reply(callback_query): return
-<<<<<<< HEAD
     logger.info(f"Vote: {callback_query.data}")
-=======
-   
-    logger.info(f"Vote callback received: {callback_query.data}")  # ДЕБАГ
-   
->>>>>>> 85040921045f5a746be63d3200977620d531640b
     try:
         user_id = callback_query.from_user.id
         data = callback_query.data.split(':')
@@ -1788,10 +1538,6 @@ async def process_vote(callback_query: types.CallbackQuery):
         logger.error(f"Vote process error: {e}")
         await callback_query.answer("Помилка!")
 
-<<<<<<< HEAD
-=======
-# --- ФІКС 3: Нова функція таймера ---
->>>>>>> 85040921045f5a746be63d3200977620d531640b
 async def spy_guess_timer_task(token):
     await asyncio.sleep(20)
     room = rooms.get(token)
@@ -1817,23 +1563,10 @@ async def spy_guess_timer_task(token):
         await end_game(token, result_message=result)
 
 def build_locations_keyboard(token: str, locations: list, columns: int = 3) -> InlineKeyboardMarkup:
-<<<<<<< HEAD
     inline_keyboard = []
     row = []
     for loc in locations:
         safe_loc = loc.replace(' ', '---')
-=======
-    """Створює InlineKeyboard з кнопками локацій для шпигуна.
-    
-    - locations: список локацій (random.shuffle вже зроблено зовні).
-    - columns: кількість кнопок в рядку (за замовчуванням 3).
-    - callback_data: 'spy_guess:{token}:{safe_loc}' з ':' роздільником (БЕЗПЕЧНО!).
-    """
-    inline_keyboard = []
-    row = []
-    for loc in locations:
-        safe_loc = loc.replace(' ', '---')  # Заміна пробілів для callback_data
->>>>>>> 85040921045f5a746be63d3200977620d531640b
         button = InlineKeyboardButton(text=loc, callback_data=f"spy_guess:{token}:{safe_loc}")
         row.append(button)
         if len(row) == columns:
@@ -1843,10 +1576,6 @@ def build_locations_keyboard(token: str, locations: list, columns: int = 3) -> I
         inline_keyboard.append(row)
     return InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
 
-<<<<<<< HEAD
-=======
-# --- ФІКС 3: Виправлена функція ---
->>>>>>> 85040921045f5a746be63d3200977620d531640b
 async def process_voting_results(token):
     try:
         room = rooms.get(token)
@@ -1894,22 +1623,14 @@ async def process_voting_results(token):
             result = f"Шпигун: {spy_username} ({spy_callsign})\nЛокація: {room['location']}\nШпигун переміг!"
             await end_game(token, result_message=result)
     except Exception as e:
-<<<<<<< HEAD
         logger.error(f"Voting results error in {token}: {e}")
         await end_game(token, "Помилка голосування.")
 
-=======
-        logger.error(f"Process voting results error in room {token}: {e}", exc_info=True)
-        await end_game(token, "Помилка при підрахунку голосів.")
-
-# --- ФІКС 3: Виправлена функція ---
->>>>>>> 85040921045f5a746be63d3200977620d531640b
 @dp.callback_query(lambda c: c.data.startswith('spy_guess:'))
 async def process_spy_guess_callback(callback_query: types.CallbackQuery):
     if await check_ban_and_reply(callback_query): return
     try:
         user_id = callback_query.from_user.id
-<<<<<<< HEAD
         data_parts = callback_query.data.split(':')
         if len(data_parts) != 3 or data_parts[0] != 'spy_guess':
             await callback_query.answer("Помилка кнопки!")
@@ -1918,23 +1639,6 @@ async def process_spy_guess_callback(callback_query: types.CallbackQuery):
         guessed_location_safe = data_parts[2]
         guessed_location = guessed_location_safe.replace('---', ' ')
         logger.info(f"Spy guess in {token}: {guessed_location}")
-=======
-       
-        # --- ФІКС: Правильне розбиття callback_data ---
-        # Формат: spy_guess:{TOKEN}:{Location---Name}
-        data_parts = callback_query.data.split(':')
-        if len(data_parts) != 3 or data_parts[0] != 'spy_guess':
-            logger.error(f"CRITICAL: Invalid spy_guess format: {callback_query.data}")
-            await callback_query.answer("Помилка! Неправильний формат кнопки.")
-            return
-        
-        token = data_parts[1]
-        guessed_location_safe = data_parts[2]
-        guessed_location = guessed_location_safe.replace('---', ' ')
-        
-        logger.info(f"Parsed: token={token}, guessed={guessed_location}")  # ДЕБАГ
-        
->>>>>>> 85040921045f5a746be63d3200977620d531640b
         room = rooms.get(token)
         if not room:
             await callback_query.answer("Гра не знайдена.")
@@ -2006,28 +1710,12 @@ async def handle_room_message(message: types.Message, state: FSMContext):
                 if not message.text:
                     await message.reply("Тільки текст.")
                     return
-<<<<<<< HEAD
                 if len(message.text) > MESSAGE_MAX_LENGTH:
                     await bot.send_message(user_id, f"Макс {MESSAGE_MAX_LENGTH} символів.")
                     return
                 if user_id not in ADMIN_IDS and user_data.get('warned_unmuted'):
                     user_data['warned_unmuted'] = False
                     await message.reply("Тепер видно.")
-=======
-               
-                # НОВЕ: Обмеження на довжину повідомлення
-                if len(message.text) > MESSAGE_MAX_LENGTH:
-                    await bot.send_message(user_id, f"Обмеження на повідомлення: {MESSAGE_MAX_LENGTH} символів. Ваше повідомлення не відправлено.")
-                    return
-               
-                if user_id not in ADMIN_IDS:
-                    user_data = user_message_times[user_id]
-                    if user_data.get('warned_unmuted', False):
-                        user_data['warned_unmuted'] = False
-                        try:
-                            await message.reply("інші вже знову бачать що ви пишете.")
-                        except Exception: pass
->>>>>>> 85040921045f5a746be63d3200977620d531640b
                 callsign = next((c for p, u, c in room['participants'] if p == user_id), None)
                 msg = f"{callsign}: {message.text}" if (room['game_started'] or room['last_minute_chat']) and callsign else f"@{username_clean}: {message.text}"
                 room['messages'].append(msg)
@@ -2043,13 +1731,8 @@ async def handle_room_message(message: types.Message, state: FSMContext):
                 return
         await message.reply("Створіть/приєднайтеся до кімнати.", reply_markup=kb_main_menu)
     except Exception as e:
-<<<<<<< HEAD
         logger.error(f"Room message error: {e}")
         await message.reply("Помилка обробки.")
-=======
-        logger.error(f"Handle room message error: {e}", exc_info=True)
-        await message.reply("Виникла помилка при обробці повідомлення.")
->>>>>>> 85040921045f5a746be63d3200977620d531640b
 
 async def end_game(token, result_message: str = None):
     try:
@@ -2113,21 +1796,12 @@ async def end_game(token, result_message: str = None):
             save_rooms()
             logger.info(f"Private game ended {token}.")
     except Exception as e:
-<<<<<<< HEAD
         logger.error(f"End game error in {token}: {e}")
         room = rooms.get(token)
-=======
-        logger.error(f"End game error in room {token}: {e}", exc_info=True)
-        # Надійний вивід: Спробуємо надіслати результат, навіть якщо помилка
-        spy_username = "Невідомо"
-        spy_callsign = "Невідомо"
-        location = "Невідомо"
->>>>>>> 85040921045f5a746be63d3200977620d531640b
         if room:
             spy_username = next((username for pid, username, _ in room['participants'] if pid == room.get('spy')), "Невідомо")
             spy_callsign = next((callsign for pid, _, callsign in room['participants'] if pid == room['spy']), "Невідомо")
             location = room.get('location', "Невідомо")
-<<<<<<< HEAD
             fallback = f"Помилка! Шпигун: {spy_username} ({spy_callsign})\nЛокація: {location}"
             for pid, _, _ in room.get('participants', []):
                 if pid > 0:
@@ -2136,21 +1810,6 @@ async def end_game(token, result_message: str = None):
                     except: pass
 
 # --- Функції запуску (без keep_alive) ---
-=======
-        fallback_message = (
-            f"Гра завершена з помилкою!\n"
-            f"Шпигун: {spy_username} ({spy_callsign})\n"
-            f"Локація: {location}"
-        )
-        for pid, _, _ in room.get('participants', []):
-            if pid > 0:
-                try:
-                    await bot.send_message(pid, fallback_message)
-                except Exception:
-                    pass
-
-# --- Функції запуску та Webhook ---
->>>>>>> 85040921045f5a746be63d3200977620d531640b
 @tenacity.retry(
     stop=tenacity.stop_after_attempt(10),
     wait=tenacity.wait_exponential(multiplier=2, min=5, max=60),
@@ -2160,32 +1819,18 @@ async def end_game(token, result_message: str = None):
 async def set_webhook_with_retry(webhook_url):
     logger.info(f"Setting webhook: {webhook_url}")
     await bot.delete_webhook(drop_pending_updates=True)
-<<<<<<< HEAD
     await bot.set_webhook(webhook_url, drop_pending_updates=True, max_connections=100)
     info = await bot.get_webhook_info()
     logger.info(f"Webhook set: {info}")
     if not info.url:
         raise aiohttp.ClientError("Webhook empty")
-=======
-    await bot.set_webhook(webhook_url, drop_pending_updates=True, max_connections=100, request_timeout=30)
-    webhook_info = await bot.get_webhook_info()
-    logger.info(f"Webhook set, current info: {webhook_info}")
-    if not webhook_info.url:
-        logger.error("Webhook URL is empty after setting!")
-        raise aiohttp.ClientError("Webhook URL is still empty after setting")
-    logger.info(f"Webhook successfully set to {webhook_url}")
->>>>>>> 85040921045f5a746be63d3200977620d531640b
 
 async def set_default_commands(bot_instance: Bot):
     try:
         await bot_instance.set_my_commands(cmds_default, scope=BotCommandScopeAllPrivateChats())
         logger.info("Global commands set.")
     except Exception as e:
-<<<<<<< HEAD
         logger.error(f"Commands set failed: {e}")
-=======
-        logger.error(f"Failed to set default commands: {e}")
->>>>>>> 85040921045f5a746be63d3200977620d531640b
 
 async def on_startup(_):
     try:
@@ -2220,11 +1865,7 @@ async def on_shutdown(_):
         await bot.session.close()
         logger.info("Shutdown OK")
     except Exception as e:
-<<<<<<< HEAD
         logger.error(f"Shutdown failed: {e}")
-=======
-        logger.error(f"Shutdown failed: {e}", exc_info=True)
->>>>>>> 85040921045f5a746be63d3200977620d531640b
 
 app = web.Application()
 webhook_path = "/webhook"
