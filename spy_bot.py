@@ -86,6 +86,7 @@ SAVE_INTERVAL = 5
 ROOM_EXPIRY = 3600  # 1 година
 XP_CIVILIAN_WIN = 10
 XP_SPY_WIN = 20
+MESSAGE_MAX_LENGTH = 120  # НОВЕ: Обмеження на довжину повідомлення
 
 # --- НОВЕ: Визначаємо наші постійні клавіатури ---
 kb_main_menu = ReplyKeyboardMarkup(
@@ -1436,13 +1437,11 @@ async def my_info(message: types.Message):
         return
        
     try:
-        # Надсилаємо ТІЛЬКИ в особисті повідомлення
         if user_id == user_room['spy']:
             await bot.send_message(user_id, "Нагадуємо: Ви - ШПИГУН. 🤫")
         else:
             await bot.send_message(user_id, f"Нагадуємо: Ви - Мирний. 😇\nЛокація: {user_room['location']}")
            
-        # Якщо це була слеш-команда, а не кнопка, відповідаємо
         if message.text.startswith("/"):
              await message.answer("Нагадування надіслано в особисті повідомлення.", reply_markup=kb_in_game)
             
@@ -2053,6 +2052,11 @@ async def handle_room_message(message: types.Message, state: FSMContext):
                     except Exception: pass
                     return
                
+                # НОВЕ: Обмеження на довжину повідомлення
+                if len(message.text) > MESSAGE_MAX_LENGTH:
+                    await bot.send_message(user_id, f"Обмеження на повідомлення: {MESSAGE_MAX_LENGTH} символів. Ваше повідомлення не відправлено.")
+                    return
+               
                 if user_id not in ADMIN_IDS:
                     user_data = user_message_times[user_id]
                     if user_data.get('warned_unmuted', False):
@@ -2181,6 +2185,25 @@ async def end_game(token, result_message: str = None):
             logger.info(f"Private game ended in room {token}. Room reset, logs preserved for 1 hour.")
     except Exception as e:
         logger.error(f"End game error in room {token}: {e}", exc_info=True)
+        # Надійний вивід: Спробуємо надіслати результат, навіть якщо помилка
+        spy_username = "Невідомо"
+        spy_callsign = "Невідомо"
+        location = "Невідомо"
+        if room:
+            spy_username = next((username for pid, username, _ in room['participants'] if pid == room.get('spy')), "Невідомо")
+            spy_callsign = next((callsign for pid, _, callsign in room['participants'] if pid == room['spy']), "Невідомо")
+            location = room.get('location', "Невідомо")
+        fallback_message = (
+            f"Гра завершена з помилкою!\n"
+            f"Шпигун: {spy_username} ({spy_callsign})\n"
+            f"Локація: {location}"
+        )
+        for pid, _, _ in room.get('participants', []):
+            if pid > 0:
+                try:
+                    await bot.send_message(pid, fallback_message)
+                except Exception:
+                    pass
 
 # --- Функції запуску та Webhook ---
 @tenacity.retry(
