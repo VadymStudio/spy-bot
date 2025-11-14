@@ -1036,9 +1036,7 @@ async def show_stats(message: types.Message, state: FSMContext):
         _, _, total_xp, games_played, spy_wins, civilian_wins, _ = stats
        
         # --- ФІКС: Повідомлення для новачків ---
-        if games_played == 0:
-            await message.reply("Зіграйте принаймі один раз, щоб отримати свою статистику.", reply_markup=kb_main_menu)
-            return
+   
         level, xp_needed_for_level, xp_in_current_level, _ = get_level_from_xp(total_xp)
        
         total_wins = spy_wins + civilian_wins
