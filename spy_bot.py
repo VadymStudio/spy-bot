@@ -1522,11 +1522,9 @@ async def early_vote(message: types.Message):
            
             # --- ФІКС: Змінено роздільник на ':' ---
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [
-                    InlineKeyboardButton(text="За", callback_data=f"early_vote_for:{token}"),
-                    InlineKeyboardButton(text="Проти", callback_data=f"early_vote_against:{token}"),
-                ]
-            ])
+            [InlineKeyboardButton(text=f"{callsign}", callback_data=f"vote_{token}_{pid}")]
+            for pid, username, callsign in room['participants']
+        ])
             for pid, _, _ in room['participants']:
                 if pid > 0:
                     try:
