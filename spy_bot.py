@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 API_TOKEN = os.getenv('BOT_TOKEN')
 if not API_TOKEN:
-    raise ValueValue("BOT_TOKEN is not set in environment variables")
+    raise ValueError("BOT_TOKEN is not set in environment variables")
 
 # --- ЗМІНЕНО: Завантажуємо список адмінів ---
 ADMIN_IDS_STR = os.getenv('ADMIN_ID')
@@ -970,7 +970,7 @@ async def unban_user(message: types.Message):
         logger.error(f"Failed to unban user: {e}", exc_info=True)
         await message.reply(f"Помилка при розбані: {e}")
 
-# --- ФУНКЦІ Ї МАТЧМЕЙКІНГУ ---
+# --- ФУНКЦІЇ МАТЧМЕЙКІНГУ ---
 async def notify_queue_updates():
     queue_size = len(matchmaking_queue)
     if queue_size == 0:
@@ -1548,11 +1548,11 @@ async def early_vote(message: types.Message):
                 logger.error(f"Failed to send early vote notice to user {user_id}: {e}")
             save_rooms()
            
-            # --- ФІКС: Змінено роздільник на ':' ---
+            # --- ВИПРАВЛЕНО: Клавіатура для За/Проти, а не для гравців ---
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=f"{callsign}", callback_data=f"vote_{token}_{pid}")]
-            for pid, username, callsign in room['participants']
-        ])
+                [InlineKeyboardButton(text="✅ За дострокове завершення", callback_data=f"early_vote_for:{token}")],
+                [InlineKeyboardButton(text="❌ Продовжити гру", callback_data=f"early_vote_against:{token}")]
+            ])
             for pid, _, _ in room['participants']:
                 if pid > 0:
                     try:
