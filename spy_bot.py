@@ -65,6 +65,9 @@ class PlayerState(StatesGroup):
     in_queue = State()
     waiting_for_token = State()
 
+class AdminState(StatesGroup):
+    waiting_for_db_file = State()
+
 # --- Константи ---
 LOCATIONS = [
     "Аеропорт", "Банк", "Пляж", "Казино", "Цирк", "Школа", "Лікарня",
