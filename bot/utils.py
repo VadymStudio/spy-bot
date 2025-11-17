@@ -23,7 +23,8 @@ import aiohttp
 import tenacity
 from collections import deque
 from bot.database import db_init, get_player_stats, DB_PATH
-from bot.rooms import load_rooms, cleanup_rooms, save_rooms, rooms, user_message_times
+from bot.rooms import load_rooms, cleanup_rooms, save_rooms
+from bot.state import rooms, user_message_times, matchmaking_queue # <--- ДОДАЙ ЦЕЙ РЯДОК
 from bot.game import matchmaking_processor
 from bot.rooms import save_rooms
 

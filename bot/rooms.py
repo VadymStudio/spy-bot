@@ -5,7 +5,11 @@ import asyncio
 import os
 import psutil
 from collections import deque
-from bot.utils import rooms, user_message_times, last_save_time, SAVE_INTERVAL, ROOM_EXPIRY, logger, process
+from bot.state import (
+    rooms, user_message_times, last_save_time, SAVE_INTERVAL, ROOM_EXPIRY, 
+    logger, DB_PATH, LOCATIONS, process
+)
+
 
 def save_rooms():
     global last_save_time
