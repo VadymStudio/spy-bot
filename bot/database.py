@@ -1,7 +1,8 @@
 import logging
 import aiosqlite
+import os
 import time
-from bot.utils import DB_PATH, logger
+from bot.utils import logger, DB_PATH  # logger можна залишити тут, він не залежить від database
 
 async def db_init():
     async with aiosqlite.connect(DB_PATH) as db:
