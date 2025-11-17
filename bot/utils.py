@@ -1,5 +1,4 @@
-from bot.database import get_player_stats
-from bot.rooms import save_rooms
+from bot.constants import logger, DB_PATH
 import logging
 import asyncio
 import random
@@ -26,6 +25,7 @@ from collections import deque
 from bot.database import db_init, get_player_stats, DB_PATH
 from bot.rooms import load_rooms, cleanup_rooms, save_rooms, rooms, user_message_times
 from bot.game import matchmaking_processor
+from bot.rooms import save_rooms
 
 # Решта коду utils.py без змін
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
