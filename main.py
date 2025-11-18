@@ -68,7 +68,13 @@ async def main() -> None:
 
     app.router.add_post(WEBHOOK_PATH, handle_webhook)
     app.router.add_get("/health", health)
-    app.router.add_head("/health", health)
+
+    async def on_shutdown(app: web.Application):
+        try:
+            await bot.session.close()
+        except Exception:
+            pass
+    app.on_shutdown.append(on_shutdown)
 
     port = int(os.getenv("PORT", "10000"))
     logging.info(f"Init complete\n======== Running on http://0.0.0.0:{port} ========")
