@@ -41,15 +41,16 @@ async def cancel_search(message: types.Message):
     user_id = message.from_user.id
     if user_id in matchmaking_queue:
         dequeue_user(user_id)
-        await message.answer("❌ Пошук скасовано.")
+        await message.answer("❌ Пошук скасовано.", reply_markup=main_menu)
     else:
-        await message.answer("ℹ️ Ви не в черзі.")
+        await message.answer("ℹ️ Ви не в черзі.", reply_markup=main_menu)
 
 
 # ------------------- Ручні кімнати -------------------
 
 @router.message(F.text == "🚪 Створити Кімнату")
 async def create_room_cmd(message: types.Message):
+    logger.debug("Create room clicked by %s", message.from_user.id)
     if maintenance_blocked(message.from_user.id):
         await message.answer("🟠 Режим обслуговування. Спробуйте пізніше.")
         return
@@ -77,6 +78,7 @@ async def create_room_cmd(message: types.Message):
 
 @router.message(F.text == "🤝 Приєднатися")
 async def join_room_ask_token(message: types.Message, state: FSMContext):
+    logger.debug("Join room clicked by %s", message.from_user.id)
     if maintenance_blocked(message.from_user.id):
         await message.answer("🟠 Режим обслуговування. Спробуйте пізніше.")
         return
