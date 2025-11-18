@@ -1,17 +1,10 @@
-from aiogram import Dispatcher, Router
-from . import admin, game, user
+from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperties
+from aiogram.fsm.storage.memory import MemoryStorage
+from config import API_TOKEN
 
-def setup_handlers(dp: Dispatcher) -> None:
-    """Налаштовує всі обробники подій"""
-    # Єдиний комбінований роутер
-    main_router = Router()
-    
-    # Підключаємо роутери з модулів
-    main_router.include_router(admin.router)
-    main_router.include_router(user.router)
-    main_router.include_router(game.router)
-    
-    # Підключаємо головний роутер до диспетчера
-    dp.include_router(main_router)
+# Лише створюємо об'єкти. Ніяких імпортів хендлерів!
+bot = Bot(token=API_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+dp = Dispatcher(storage=MemoryStorage())
 
-__all__ = ['setup_handlers']
+__all__ = ["bot", "dp"]
