@@ -21,6 +21,12 @@ async def main() -> None:
     # Запускаємо бота у режимі polling (поки без вебхука)
     await init_db()
     start_matchmaking_processor()
+    # ВАЖЛИВО: знімаємо вебхук, якщо був встановлений раніше
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        logging.info("Webhook deleted (drop_pending_updates=True)")
+    except Exception as e:
+        logging.warning(f"Failed to delete webhook: {e}")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
