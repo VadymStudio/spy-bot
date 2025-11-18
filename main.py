@@ -66,8 +66,12 @@ async def main() -> None:
     async def health(request: web.Request) -> web.Response:
         return web.Response(text="ok")
 
+    async def root(request: web.Request) -> web.Response:
+        return web.Response(text="ok")
+
     app.router.add_post(WEBHOOK_PATH, handle_webhook)
     app.router.add_get("/health", health)
+    app.router.add_get("/", root)
 
     async def on_shutdown(app: web.Application):
         try:
