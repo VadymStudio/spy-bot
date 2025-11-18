@@ -77,8 +77,16 @@ async def main() -> None:
     app.on_shutdown.append(on_shutdown)
 
     port = int(os.getenv("PORT", "10000"))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, host="0.0.0.0", port=port)
+    await site.start()
     logging.info(f"Init complete\n======== Running on http://0.0.0.0:{port} ========")
-    web.run_app(app, host="0.0.0.0", port=port)
+    try:
+        while True:
+            await asyncio.sleep(3600)
+    finally:
+        await runner.cleanup()
 
 if __name__ == "__main__":
     asyncio.run(main())
