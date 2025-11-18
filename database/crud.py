@@ -152,8 +152,11 @@ async def update_player_stats(
     user_id: int,
     is_spy: bool,
     is_winner: bool
-) -> bool:
-    """Оновлює статистику гравця після гри."""
+) -> tuple[int, int, int]:
+    """
+    Оновлює статистику гравця після гри.
+    Повертає: (поточний рівень, поточний XP, XP до наступного рівня)
+    """
     async with aiosqlite.connect(DB_PATH) as db:
         # Отримуємо поточну статистику
         async with db.execute(
@@ -164,9 +167,13 @@ async def update_player_stats(
             
             if not stats:
                 logger.warning(f"Player {user_id} not found when updating stats")
-                return False
+                return 1, 0, 20  # Повертаємо рівень 1 за замовчуванням
                 
             total_xp, games_played, spy_wins, civilian_wins = stats
+            
+            # Отримуємо поточний рівень перед оновленням
+            from database.models import get_level
+            level_before, _, _ = get_level(total_xp)
             
             # Оновлюємо статистику
             games_played += 1
@@ -179,6 +186,9 @@ async def update_player_stats(
                     civilian_wins += 1
                     total_xp += 10  # XP за перемогу як цивільний
             
+            # Отримуємо новий рівень після оновлення
+            level_after, current_xp, xp_needed = get_level(total_xp)
+            
             # Зберігаємо оновлену статистику
             await db.execute(
                 """
@@ -189,7 +199,8 @@ async def update_player_stats(
                 (total_xp, games_played, spy_wins, civilian_wins, user_id)
             )
             await db.commit()
-            return True
+            
+            return level_after, current_xp, xp_needed
 
 async def log_game(
     room_token: str,

@@ -1,6 +1,33 @@
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set
 
+def calculate_xp_for_level(level: int) -> int:
+    """Розраховує необхідний досвід для наступного рівня"""
+    if level < 1:
+        return 0
+    base_xp = 20  # XP для 2 рівня
+    if level == 1:
+        return base_xp
+    
+    # Коефіцієнт зменшується з 1.48 до 1.2
+    min_coef = 1.2
+    max_coef = 1.48
+    coef = max(min_coef, max_coef - (level - 2) * 0.02)
+    
+    return int(calculate_xp_for_level(level - 1) * coef)
+
+def get_level(xp: int) -> tuple[int, int, int]:
+    """Повертає (поточний рівень, поточний XP, XP до наступного рівня)"""
+    level = 1
+    xp_needed = calculate_xp_for_level(level)
+    
+    while xp >= xp_needed and xp_needed > 0:
+        xp -= xp_needed
+        level += 1
+        xp_needed = calculate_xp_for_level(level)
+    
+    return level, xp, xp_needed
+
 @dataclass
 class Player:
     user_id: int
@@ -10,6 +37,17 @@ class Player:
     spy_wins: int = 0
     civilian_wins: int = 0
     banned_until: int = 0
+    
+    @property
+    def level_info(self) -> tuple[int, int, int]:
+        """Повертає (рівень, поточний XP, XP до наступного рівня)"""
+        return get_level(self.total_xp)
+    
+    def add_xp(self, amount: int) -> bool:
+        """Додає XP гравцю. Повертає True, якщо зріс рівень"""
+        old_level = self.level_info[0]
+        self.total_xp += amount
+        return self.level_info[0] > old_level
 
 @dataclass
 class Room:

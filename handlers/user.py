@@ -81,14 +81,19 @@ async def cmd_stats(message: types.Message):
     wins = spy_w + civ_w
     win_rate = (wins / games * 100) if games > 0 else 0
     
+    # Отримуємо інформацію про рівень
+    level, current_xp, xp_for_next = stats.get('level_info', (1, 0, 20))
+    progress = f"{current_xp}/{xp_for_next}" if xp_for_next > 0 else "MAX"
+    
     await message.answer(
         (
             "📊 <b>Ваша статистика</b>\n\n"
+            f"🏅 Рівень: <b>{level}</b> ({progress} XP)\n"
             f"🎮 Ігор: <b>{games}</b>\n"
             f"🏆 Перемог: <b>{wins}</b> (<i>{win_rate:.1f}%</i>)\n"
             f"🕵️ Шпигун перемоги: <b>{spy_w}</b>\n"
             f"👥 Цивільний перемоги: <b>{civ_w}</b>\n"
-            f"⭐ Досвід: <b>{total_xp}</b> XP"
+            f"⭐ Всього досвіду: <b>{total_xp}</b> XP"
         ),
         parse_mode="HTML"
     )
