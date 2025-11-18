@@ -56,13 +56,30 @@ async def init_db():
 
 # Операції з гравцями
 async def get_player(user_id: int) -> Optional[Player]:
-    """Отримує гравця за ID. Якщо не існує - повертає None."""
+    """Отримує гравця за ID. Якщо не існує - повертає None.
+    Стійко до додаткових колонок у таблиці (старі схеми)."""
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT * FROM players WHERE user_id = ?", (user_id,)) as cursor:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT user_id, username, total_xp, games_played, spy_wins, civilian_wins, banned_until
+            FROM players WHERE user_id = ?
+            """,
+            (user_id,)
+        ) as cursor:
             row = await cursor.fetchone()
-            if row:
-                return Player(*row)
-            return None
+            if not row:
+                return None
+            data = {
+                'user_id': row['user_id'],
+                'username': row['username'],
+                'total_xp': row['total_xp'],
+                'games_played': row['games_played'],
+                'spy_wins': row['spy_wins'],
+                'civilian_wins': row['civilian_wins'],
+                'banned_until': row['banned_until'],
+            }
+            return Player(**data)
 
 async def get_or_create_player(user_id: int, username: str = None) -> Player:
     """Отримує гравця за ID або створює нового, якщо не існує."""
