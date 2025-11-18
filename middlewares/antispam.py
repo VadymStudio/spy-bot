@@ -63,7 +63,7 @@ class AntiSpamMiddleware(BaseMiddleware):
         # Media blocking (gif/photo/sticker)
         if BLOCK_MEDIA and (event.animation or event.photo or event.sticker):
             try:
-                await event.answer("🛑 Медіа (гіфки/фото/стікери) заборонені в цій грі.")
+                await event.answer("🛑 Медіа (гіфки/фото/стікери) недоступні в цій грі.")
             except Exception:
                 pass
             return  # drop

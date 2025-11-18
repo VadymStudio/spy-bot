@@ -2,9 +2,9 @@ import logging
 from aiogram import Router, types, F
 from aiogram.filters import Command
 
-from keyboards.keyboards import main_menu
+from keyboards.keyboards import main_menu, get_admin_keyboard
 from database.crud import get_or_create_player, get_player_stats
-from utils.helpers import maintenance_blocked
+from utils.helpers import maintenance_blocked, is_admin
 from config import add_active_user
 
 router = Router()
@@ -24,6 +24,24 @@ async def cmd_start(message: types.Message):
         reply_markup=main_menu
     )
     add_active_user(user.id)
+
+
+@router.message(Command("admin"))
+async def admin_menu(message: types.Message):
+    if not is_admin(message.from_user.id):
+        return
+    await message.answer("🛠 Адмін-меню", reply_markup=get_admin_keyboard())
+
+
+@router.message(Command("main_menu"))
+async def back_to_main(message: types.Message):
+    await message.answer("🏠 Головне меню", reply_markup=main_menu)
+
+
+# Fallback: будь-який інший текст -> головне меню
+@router.message()
+async def fallback_any_text(message: types.Message):
+    await message.answer("ℹ️ Використовуйте кнопки нижче.", reply_markup=main_menu)
 
 @router.message(Command("stats"))
 @router.message(F.text == "📊 Моя Статистика")

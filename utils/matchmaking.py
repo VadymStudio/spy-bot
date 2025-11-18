@@ -13,6 +13,7 @@ from utils.helpers import generate_room_token
 _enqueued_at: Dict[int, float] = {}
 _queue_last_change: float = time.time()
 _processor_task: Optional[asyncio.Task] = None
+_last_notify_ts: float = 0.0
 
 MM_MIN = 3
 MM_MAX = 6
@@ -21,6 +22,29 @@ MM_MAX = 6
 def _mark_change() -> None:
     global _queue_last_change
     _queue_last_change = time.time()
+    # also mark for potential notify
+
+
+async def _notify_queue() -> None:
+    """Notify all users currently in the queue about live count. Debounced to avoid spam."""
+    global _last_notify_ts
+    now = time.time()
+    if now - _last_notify_ts < 2.0:  # debounce 2s
+        return
+    _last_notify_ts = now
+    n = len(matchmaking_queue)
+    if n <= 0:
+        return
+    remaining = max(0, MM_MIN - n)
+    text = (
+        f"⏳ У черзі: <b>{n}</b>/{MM_MAX}. "
+        + ("Чекаємо ще гравців…" if remaining > 0 else "Скоро формуємо кімнати…")
+    )
+    for uid in list(matchmaking_queue):
+        try:
+            await bot.send_message(uid, text, parse_mode="HTML")
+        except Exception:
+            pass
 
 
 def enqueue_user(user_id: int) -> None:
@@ -28,6 +52,11 @@ def enqueue_user(user_id: int) -> None:
         matchmaking_queue.append(user_id)
         _enqueued_at[user_id] = time.time()
         _mark_change()
+        # schedule notify (fire-and-forget)
+        try:
+            asyncio.create_task(_notify_queue())
+        except Exception:
+            pass
 
 
 def dequeue_user(user_id: int) -> None:
@@ -35,6 +64,10 @@ def dequeue_user(user_id: int) -> None:
         matchmaking_queue.remove(user_id)
         _enqueued_at.pop(user_id, None)
         _mark_change()
+        try:
+            asyncio.create_task(_notify_queue())
+        except Exception:
+            pass
 
 
 def _optimal_partition(n: int) -> List[int]:

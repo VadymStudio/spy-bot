@@ -91,7 +91,8 @@ async def join_room_process_token(message: types.Message, state: FSMContext):
     user = message.from_user
     token = (message.text or "").strip().upper()
     if token not in rooms:
-        await message.answer("❌ Кімнату не знайдено. Перевірте код.")
+        await message.answer("❌ Кімнату не знайдено. Повертаємось до меню.", reply_markup=main_menu)
+        await state.clear()
         return
     room = rooms[token]
     # Перевіряємо розмір кімнати
@@ -121,7 +122,7 @@ async def join_room_process_token(message: types.Message, state: FSMContext):
 
 
 @router.message(F.text == "🚪 Покинути Лобі")
-async def leave_lobby(message: types.Message):
+async def leave_lobby(message: types.Message, state: FSMContext):
     user = message.from_user
     # Знайти кімнату, де є користувач
     target_token = None
@@ -131,6 +132,10 @@ async def leave_lobby(message: types.Message):
             break
     if not target_token:
         await message.answer("ℹ️ Ви не в лобі жодної кімнати.", reply_markup=main_menu)
+        try:
+            await state.clear()
+        except Exception:
+            pass
         return
     room = rooms[target_token]
     username = room.players.get(user.id, "Гравець")
@@ -156,6 +161,10 @@ async def leave_lobby(message: types.Message):
         except Exception:
             pass
     await message.answer("✅ Ви покинули лобі.", reply_markup=main_menu)
+    try:
+        await state.clear()
+    except Exception:
+        pass
 
 
 # ------------------- Старт гри -------------------
