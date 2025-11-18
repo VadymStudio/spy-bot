@@ -1,5 +1,5 @@
 import logging
-from aiogram import Router, types
+from aiogram import Router, types, F
 from aiogram.filters import Command
 
 from keyboards.keyboards import main_menu
@@ -26,7 +26,7 @@ async def cmd_start(message: types.Message):
     add_active_user(user.id)
 
 @router.message(Command("stats"))
-@router.message(types.F.text == "📊 Моя Статистика")
+@router.message(F.text == "📊 Моя Статистика")
 async def cmd_stats(message: types.Message):
     if maintenance_blocked(message.from_user.id):
         await message.answer("🟠 Режим обслуговування. Спробуйте пізніше.")
