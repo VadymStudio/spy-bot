@@ -1,6 +1,8 @@
+from typing import Dict, List
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from typing import List, Dict, Optional, Union, Tuple
+
+# --- Reply Keyboards (Меню) ---
 
 # Головне меню
 main_menu = ReplyKeyboardMarkup(
@@ -33,12 +35,27 @@ in_game_menu = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
+# --- Inline Keyboards (Кнопки дій) ---
+
+def get_in_lobby_keyboard(is_admin: bool = False, room_token: str = "") -> InlineKeyboardMarkup:
+    """
+    Клавіатура лобі.
+    Для адміна кімнати додає кнопку старту.
+    """
+    builder = InlineKeyboardBuilder()
+    
+    if is_admin and room_token:
+        builder.button(text="🚀 Почати Гру", callback_data=f"start_game:{room_token}")
+    
+    # Можна додати інші кнопки, наприклад "Поділитися кодом"
+    return builder.as_markup()
+
 def get_voting_keyboard(room_token: str, players: Dict[int, str], voter_id: int) -> InlineKeyboardMarkup:
-    """Повертає клавіатуру для голосування за вигнання гравців."""
+    """Клавіатура для голосування за вигнання."""
     builder = InlineKeyboardBuilder()
     
     for player_id, username in players.items():
-        if player_id != voter_id:  # Не дозволяємо голосувати за себе
+        if player_id != voter_id:  # Не можна голосувати проти себе
             builder.button(
                 text=f"👤 {username}",
                 callback_data=f"vote:{room_token}:{player_id}"
@@ -53,7 +70,7 @@ def get_voting_keyboard(room_token: str, players: Dict[int, str], voter_id: int)
     return builder.as_markup()
 
 def get_locations_keyboard(room_token: str, locations: List[str], columns: int = 3) -> InlineKeyboardMarkup:
-    """Повертає клавіатуру з варіантами локацій для шпигуна."""
+    """Клавіатура локацій для шпигуна."""
     builder = InlineKeyboardBuilder()
     
     for location in locations:
@@ -62,45 +79,27 @@ def get_locations_keyboard(room_token: str, locations: List[str], columns: int =
             callback_data=f"guess:{room_token}:{location}"
         )
     
-    builder.adjust(columns)  # Вказуємо кількість кнопок у рядку
+    builder.adjust(columns)
     return builder.as_markup()
 
 def get_confirm_keyboard(room_token: str) -> InlineKeyboardMarkup:
-    """Повертає клавіатуру з підтвердженням для початку гри."""
+    """Підтвердження старту."""
     builder = InlineKeyboardBuilder()
-    
-    builder.button(
-        text="✅ Так, почати гру",
-        callback_data=f"start_game:{room_token}"
-    )
-    
-    builder.button(
-        text="❌ Ні, скасувати",
-        callback_data=f"cancel_start:{room_token}"
-    )
-    
-    builder.adjust(1)  # По одній кнопці в рядок
+    builder.button(text="✅ Так, почати гру", callback_data=f"start_game:{room_token}")
+    builder.button(text="❌ Ні, скасувати", callback_data=f"cancel_start:{room_token}")
+    builder.adjust(1)
     return builder.as_markup()
 
 def get_early_vote_keyboard(room_token: str) -> InlineKeyboardMarkup:
-    """Повертає клавіатуру для дострокового завершення гри."""
+    """Дострокове завершення."""
     builder = InlineKeyboardBuilder()
-    
-    builder.button(
-        text="✅ Так, завершити гру",
-        callback_data=f"early_vote_yes:{room_token}"
-    )
-    
-    builder.button(
-        text="❌ Ні, продовжити гру",
-        callback_data=f"early_vote_no:{room_token}"
-    )
-    
-    builder.adjust(1)  # По одній кнопці в рядок
+    builder.button(text="✅ Так, завершити гру", callback_data=f"early_vote_yes:{room_token}")
+    builder.button(text="❌ Ні, продовжити гру", callback_data=f"early_vote_no:{room_token}")
+    builder.adjust(1)
     return builder.as_markup()
 
 def get_admin_keyboard() -> ReplyKeyboardMarkup:
-    """Повертає клавіатуру адміністратора."""
+    """Клавіатура адміна бота."""
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="/maintenance_on"), KeyboardButton(text="/maintenance_off")],
