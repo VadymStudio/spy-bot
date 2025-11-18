@@ -1,13 +1,16 @@
 import asyncio
 import logging
+import os
 
 from bot import bot, dp
 from handlers import setup_handlers
-from config import USE_POLLING
+from config import USE_POLLING, RENDER_EXTERNAL_HOSTNAME, WEBHOOK_PATH
 from database.crud import init_db
 from utils.matchmaking import start_matchmaking_processor
 from middlewares.antispam import AntiSpamMiddleware
 from middlewares.ban import BanMiddleware
+from aiohttp import web
+from aiogram.types import Update
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
@@ -18,16 +21,59 @@ async def main() -> None:
     dp.message.middleware(AntiSpamMiddleware())
     dp.message.middleware(BanMiddleware())
 
-    # Запускаємо бота у режимі polling (поки без вебхука)
+    # Спільна ініціалізація
     await init_db()
     start_matchmaking_processor()
-    # ВАЖЛИВО: знімаємо вебхук, якщо був встановлений раніше
+
+    if USE_POLLING:
+        # Режим POLLING: видаляємо вебхук і запускаємо polling
+        try:
+            await bot.delete_webhook(drop_pending_updates=True)
+            logging.info("Webhook deleted (drop_pending_updates=True)")
+        except Exception as e:
+            logging.warning(f"Failed to delete webhook: {e}")
+        await dp.start_polling(bot)
+        return
+
+    # Режим WEBHOOK (Render Web Service)
+    webhook_url = f"https://{RENDER_EXTERNAL_HOSTNAME}{WEBHOOK_PATH}"
+    logging.info(f"Webhook: {webhook_url}")
     try:
-        await bot.delete_webhook(drop_pending_updates=True)
-        logging.info("Webhook deleted (drop_pending_updates=True)")
+        await bot.set_webhook(webhook_url)
+        logging.info(f"Webhook set: {webhook_url}")
     except Exception as e:
-        logging.warning(f"Failed to delete webhook: {e}")
-    await dp.start_polling(bot)
+        logging.error(f"Failed to set webhook: {e}")
+        raise
+
+    app = web.Application()
+
+    async def handle_webhook(request: web.Request) -> web.Response:
+        try:
+            data = await request.json()
+        except Exception:
+            return web.Response(status=400, text="bad request")
+        try:
+            update = Update.model_validate(data)
+        except Exception:
+            return web.Response(status=400, text="invalid update")
+        try:
+            await dp.feed_update(bot, update)
+        except Exception:
+            # Не падаємо на окремих апдейтах
+            pass
+        return web.Response(text="ok")
+
+    async def health(request: web.Request) -> web.Response:
+        return web.Response(text="ok")
+
+    app.router.add_post(WEBHOOK_PATH, handle_webhook)
+    app.router.add_get("/health", health)
+    app.router.add_head("/health", health)
+
+    port = int(os.getenv("PORT", "10000"))
+    logging.info(f"Init complete\n======== Running on http://0.0.0.0:{port} ========")
+    web.run_app(app, host="0.0.0.0", port=port)
 
 if __name__ == "__main__":
     asyncio.run(main())
+
