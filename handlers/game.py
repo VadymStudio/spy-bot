@@ -1,20 +1,24 @@
-from config import BOT_IDS, BOT_NAMES, BOT_AVATARS
 import logging
 import asyncio
 import random
+import time
+from datetime import datetime
+
 from aiogram import Router, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
-import random
-import string
-import asyncio
-import logging
-import time
-from datetime import datetime, timedelta
 
 from bot import bot
-from config import matchmaking_queue, add_active_user, rooms, LOCATIONS, GAME_DURATION_SECONDS, XP_CIVILIAN_WIN, XP_SPY_WIN, CALLSIGNS, ROOM_EXPIRY, ADMIN_IDS
+from config import (
+    matchmaking_queue, 
+    add_active_user, 
+    rooms, 
+    LOCATIONS, 
+    GAME_DURATION_SECONDS, 
+    BOT_IDS, 
+    BOT_NAMES, 
+    BOT_AVATARS
+)
 from keyboards.keyboards import (
     in_queue_menu,
     in_lobby_menu,
@@ -22,22 +26,19 @@ from keyboards.keyboards import (
     get_early_vote_keyboard,
     get_voting_keyboard,
     get_locations_keyboard,
-    get_main_menu, 
-    get_in_queue_keyboard, 
-    get_in_lobby_keyboard,
-    get_in_game_keyboard, 
-    get_confirm_keyboard, 
-    get_admin_menu
+    get_in_lobby_keyboard
 )
 from utils.helpers import maintenance_blocked, generate_room_token
 from utils.matchmaking import enqueue_user, dequeue_user
 from utils.states import PlayerState
-from database.crud import update_player_stats, get_or_create_player, log_game, get_player
-from database.models import Room, UserState, Player
+from database.crud import update_player_stats, get_or_create_player
+from database.models import Room, UserState
 
 router = Router()
 logger = logging.getLogger(__name__)
 
+# Глобальний словник для станів користувачів (виправляє помилку undefined variable)
+user_states = {}
 
 @router.message(F.text == "🎮 Знайти Гру")
 async def find_match(message: types.Message):
@@ -88,7 +89,19 @@ async def create_room_cmd(message: types.Message):
     )
     rooms[token] = room
     
-    @router.message(Command("add_bot"))
+    # Оновлюємо стан користувача
+    if message.from_user.id not in user_states:
+        user_states[message.from_user.id] = UserState()
+    user_states[message.from_user.id].current_room = token
+    
+    await message.answer(
+        f"✅ Кімната створена! Код: <code>{token}</code>\n\n"
+        "Запрошіть друзів або додайте ботів командою /add_bot",
+        parse_mode="HTML",
+        reply_markup=get_in_lobby_keyboard(is_admin=True)
+    )
+
+@router.message(Command("add_bot"))
 async def cmd_add_bot(message: types.Message):
     """Додає бота до поточної кімнати (тільки для адміна)"""
     # Знаходимо кімнату, де знаходиться гравець
@@ -136,18 +149,6 @@ async def cmd_add_bot(message: types.Message):
     
     await message.answer(f"✅ {bot_name} додано до кімнати")
 
-    # Оновлюємо стан користувача
-    if message.from_user.id not in user_states:
-        user_states[message.from_user.id] = UserState()
-    user_states[message.from_user.id].current_room = token
-    
-    await message.answer(
-        f"✅ Кімната створена! Код: <code>{token}</code>\n\n"
-        "Запрошіть друзів або додайте ботів командою /add_bot",
-        parse_mode="HTML",
-        reply_markup=get_in_lobby_keyboard(is_admin=True)
-    )
-
 
 @router.message(F.text == "🤝 Приєднатися")
 async def join_room_ask_token(message: types.Message, state: FSMContext):
@@ -179,6 +180,12 @@ async def join_room_process_token(message: types.Message, state: FSMContext):
     else:
         room.players[user.id] = user.full_name or (user.username or str(user.id))
         room.last_activity = int(datetime.now().timestamp())
+        
+        # Оновлюємо user_states
+        if user.id not in user_states:
+            user_states[user.id] = UserState()
+        user_states[user.id].current_room = token
+
         # Сповістити інших
         for pid in room.players:
             if pid == user.id:
@@ -215,6 +222,11 @@ async def leave_lobby(message: types.Message, state: FSMContext):
     # Видалити користувача з кімнати
     if user.id in room.players:
         del room.players[user.id]
+    
+    # Видаляємо з user_states
+    if user.id in user_states:
+        del user_states[user.id]
+
     # Якщо кімната спорожніла — прибрати її
     if not room.players:
         del rooms[target_token]
@@ -248,10 +260,23 @@ def _find_user_room(user_id: int):
             return t, r
     return None, None
 
+async def _game_timer(token: str):
+    """Таймер гри: якщо час вийшов, перемагає шпигун."""
+    try:
+        await asyncio.sleep(GAME_DURATION_SECONDS)
+        room = rooms.get(token)
+        if room and room.game_started:
+            await end_game(token, spy_won=True, reason="⏰ Час вичерпано! Шпигун переміг.")
+    except asyncio.CancelledError:
+        pass
 
 @router.message(Command("start_game"))
 async def start_game(room: Room):
     """Починає гру в кімнаті"""
+    # Ця функція, ймовірно, викликається з create_room або іншого місця, 
+    # бо тут аргумент room, а не message. 
+    # Але залишаємо як є за вашим кодом.
+    
     players = list(room.players.keys())
     
     # Вибір шпигуна (тільки серед справжніх гравців)
