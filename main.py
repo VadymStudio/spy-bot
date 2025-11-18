@@ -1,97 +1,108 @@
 import asyncio
 import logging
 import os
+import sys
 
-from bot import bot, dp
-from handlers import setup_handlers
-from config import USE_POLLING, RENDER_EXTERNAL_HOSTNAME, WEBHOOK_PATH
-from database.crud import init_db
-from utils.matchmaking import start_matchmaking_processor
-from middlewares.antispam import AntiSpamMiddleware
-from middlewares.ban import BanMiddleware
 from aiohttp import web
+from aiogram import Bot, Dispatcher
 from aiogram.types import Update
+from aiogram.fsm.storage.memory import MemoryStorage
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# Імпорти з твоїх модулів
+# Важливо дотримуватися структури папок
+try:
+    from config import (
+        API_TOKEN, 
+        USE_POLLING, 
+        RENDER_EXTERNAL_HOSTNAME, #пж работай
+        WEBHOOK_PATH, 
+        DB_PATH
+    )
+    from database.crud import init_db
+    from utils.matchmaking import start_matchmaking_processor
+    from middlewares.antispam import AntiSpamMiddleware
+    from middlewares.ban import BanMiddleware
+    from handlers import setup_handlers
+    from bot import bot, dp
+except ImportError as e:
+    print(f"CRITICAL IMPORT ERROR: {e}")
+    print("Make sure your folder structure matches the imports (handlers/, database/, utils/, middlewares/)")
+    sys.exit(1)
 
-async def main() -> None:
-    # Підключаємо всі обробники
+# Налаштування логування
+logging.basicConfig(
+    level=logging.INFO, 
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+async def on_startup(app):
+    """Дії при старті веб-додатку"""
+    logger.info("Starting up...")
+    
+    # 1. Ініціалізація БД
+    await init_db()
+    logger.info("Database initialized.")
+
+    # 2. Налаштування хендлерів
     setup_handlers(dp)
-    # Підключаємо middleware
+    
+    # 3. Мідлварі
     dp.message.middleware(AntiSpamMiddleware())
     dp.message.middleware(BanMiddleware())
-
-    # Спільна ініціалізація
-    await init_db()
+    
+    # 4. Запуск матмейкінгу
     start_matchmaking_processor()
-
+    
+    # 5. Налаштування Telegram
     if USE_POLLING:
-        # Режим POLLING: видаляємо вебхук і запускаємо polling
-        try:
-            await bot.delete_webhook(drop_pending_updates=True)
-            logging.info("Webhook deleted (drop_pending_updates=True)")
-        except Exception as e:
-            logging.warning(f"Failed to delete webhook: {e}")
-        await dp.start_polling(bot)
-        return
-
-    # Режим WEBHOOK (Render Web Service)
-    webhook_url = f"https://{RENDER_EXTERNAL_HOSTNAME}{WEBHOOK_PATH}"
-    logging.info(f"Webhook: {webhook_url}")
-    try:
+        logger.info("Mode: POLLING")
+        await bot.delete_webhook(drop_pending_updates=True)
+        # Запускаємо polling у фоновому завданні, щоб не блокувати web server
+        asyncio.create_task(dp.start_polling(bot))
+    else:
+        logger.info("Mode: WEBHOOK")
+        webhook_url = f"https://{RENDER_EXTERNAL_HOSTNAME}{WEBHOOK_PATH}"
         await bot.set_webhook(webhook_url)
-        logging.info(f"Webhook set: {webhook_url}")
-    except Exception as e:
-        logging.error(f"Failed to set webhook: {e}")
-        raise
+        logger.info(f"Webhook set to: {webhook_url}")
 
-    app = web.Application()
-
-    async def handle_webhook(request: web.Request) -> web.Response:
-        try:
-            data = await request.json()
-        except Exception:
-            return web.Response(status=400, text="bad request")
-        try:
-            update = Update.model_validate(data)
-        except Exception:
-            return web.Response(status=400, text="invalid update")
-        try:
-            await dp.feed_update(bot, update)
-        except Exception:
-            # Не падаємо на окремих апдейтах
-            pass
-        return web.Response(text="ok")
-
-    async def health(request: web.Request) -> web.Response:
-        return web.Response(text="ok")
-
-    async def root(request: web.Request) -> web.Response:
-        return web.Response(text="ok")
-
-    app.router.add_post(WEBHOOK_PATH, handle_webhook)
-    app.router.add_get("/health", health)
-    app.router.add_get("/", root)
-
-    async def on_shutdown(app: web.Application):
-        try:
-            await bot.session.close()
-        except Exception:
-            pass
-    app.on_shutdown.append(on_shutdown)
-
-    port = int(os.getenv("PORT", "10000"))
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, host="0.0.0.0", port=port)
-    await site.start()
-    logging.info(f"Init complete\n======== Running on http://0.0.0.0:{port} ========")
+async def handle_webhook(request):
+    """Обробка вхідних вебхуків від Telegram"""
     try:
-        while True:
-            await asyncio.sleep(3600)
-    finally:
-        await runner.cleanup()
+        data = await request.json()
+        update = Update.model_validate(data)
+        await dp.feed_update(bot, update)
+        return web.Response(text="ok")
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        return web.Response(text="error", status=500)
+
+async def health_check(request):
+    """Проста перевірка, що сервер живий (для Render)"""
+    return web.Response(text="I am alive!", status=200)
+
+def main():
+    # Створення веб-додатку aiohttp
+    app = web.Application()
+    
+    # Додавання маршрутів
+    app.router.add_get("/", health_check)
+    app.router.add_get("/health", health_check)
+    
+    # Якщо режим вебхуку - додаємо POST endpoint
+    if not USE_POLLING:
+        app.router.add_post(WEBHOOK_PATH, handle_webhook)
+    
+    # Реєстрація startup події
+    app.on_startup.append(on_startup)
+    
+    # Отримання порту від Render
+    port = int(os.getenv("PORT", 10000))
+    
+    logger.info(f"Starting web server on port {port}")
+    
+    # Запуск веб-сервера
+    web.run_app(app, host="0.0.0.0", port=port)
 
 if __name__ == "__main__":
-    asyncio.run(main())
-
+    main()
