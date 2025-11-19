@@ -1,6 +1,7 @@
 import logging
 from aiogram import Router, types, F
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
 
 from keyboards.keyboards import main_menu, get_admin_keyboard
 from database.crud import get_or_create_player, get_player_stats
@@ -11,11 +12,14 @@ router = Router()
 logger = logging.getLogger(__name__)
 
 @router.message(Command("start"))
-async def cmd_start(message: types.Message):
+async def cmd_start(message: types.Message, state: FSMContext):
     if maintenance_blocked(message.from_user.id):
         return
+    
+    # Скидаємо будь-які стани при старті
+    await state.clear()
+    
     user = message.from_user
-    # Переконуємось, що гравець існує в БД
     await get_or_create_player(user.id, user.username)
     await message.answer(
         "👋 Вітаю у грі 'Шпигун!'\n\n"
@@ -25,40 +29,19 @@ async def cmd_start(message: types.Message):
     )
     add_active_user(user.id)
 
-
 @router.message(Command("admin"))
 async def admin_menu(message: types.Message):
     if not is_admin(message.from_user.id):
         return
     await message.answer("🛠 Адмін-меню", reply_markup=get_admin_keyboard())
 
-
 @router.message(Command("main_menu"))
-async def back_to_main(message: types.Message):
+async def back_to_main(message: types.Message, state: FSMContext):
+    await state.clear()
     await message.answer("🏠 Головне меню", reply_markup=main_menu)
 
-
-# Відомі тексти кнопок, щоб не перехоплювати валідні дії
-_KNOWN_BUTTONS = {
-    "🎮 Знайти Гру",
-    "🚪 Створити Кімнату",
-    "🤝 Приєднатися",
-    "📊 Моя Статистика",
-    "❓ Допомога",
-    "❌ Скасувати Пошук",
-    "🚪 Покинути Лобі",
-    "❓ Моя роль",
-    "🗳️ Достр. Голосування",
-    "🚪 Покинути Гру",
-}
-
-# Fallback: лише невідомий звичайний текст (не команди, не відомі кнопки) -> головне меню
-@router.message(F.text & ~F.text.startswith("/") & ~F.text.in_(_KNOWN_BUTTONS))
-async def fallback_any_text(message: types.Message):
-    await message.answer("ℹ️ Використовуйте кнопки нижче.", reply_markup=main_menu)
-
-@router.message(Command("stats"))
 @router.message(F.text == "📊 Моя Статистика")
+@router.message(Command("stats"))
 async def cmd_stats(message: types.Message):
     if maintenance_blocked(message.from_user.id):
         await message.answer("🟠 Режим обслуговування. Спробуйте пізніше.")
@@ -66,35 +49,60 @@ async def cmd_stats(message: types.Message):
     user = message.from_user
     stats = await get_player_stats(user.id)
     if not stats:
-        # Створюємо запис і показуємо нульові значення
         await get_or_create_player(user.id, user.username)
-        stats = {
-            'games_played': 0,
-            'spy_wins': 0,
-            'civilian_wins': 0,
-            'total_xp': 0
-        }
-    games = stats.get('games_played', 0)
-    spy_w = stats.get('spy_wins', 0)
-    civ_w = stats.get('civilian_wins', 0)
-    total_xp = stats.get('total_xp', 0)
-    wins = spy_w + civ_w
-    win_rate = (wins / games * 100) if games > 0 else 0
+        stats = {'games_played': 0, 'spy_wins': 0, 'civilian_wins': 0, 'total_xp': 0}
     
-    # Отримуємо інформацію про рівень
+    games = stats.get('games_played', 0)
+    wins = stats.get('spy_wins', 0) + stats.get('civilian_wins', 0)
+    total_xp = stats.get('total_xp', 0)
+    
+    # Розрахунок рівня
     level, current_xp, xp_for_next = stats.get('level_info', (1, 0, 20))
-    progress = f"{current_xp}/{xp_for_next}" if xp_for_next > 0 else "MAX"
     
     await message.answer(
         (
-            "📊 <b>Ваша статистика</b>\n\n"
-            f"🏅 Рівень: <b>{level}</b> ({progress} XP)\n"
-            f"🎮 Ігор: <b>{games}</b>\n"
-            f"🏆 Перемог: <b>{wins}</b> (<i>{win_rate:.1f}%</i>)\n"
-            f"🕵️ Шпигун перемоги: <b>{spy_w}</b>\n"
-            f"👥 Цивільний перемоги: <b>{civ_w}</b>\n"
-            f"⭐ Всього досвіду: <b>{total_xp}</b> XP"
+            f"📊 <b>Ваша статистика:</b>\n\n"
+            f"⭐ Рівень: <b>{level}</b>\n"
+            f"📈 XP: {current_xp}/{xp_for_next}\n"
+            f"🎮 Ігор зіграно: {games}\n"
+            f"🏆 Перемог: {wins}\n"
+            f"🕵️ За шпигуна: {stats.get('spy_wins', 0)}\n"
+            f"👥 За мирного: {stats.get('civilian_wins', 0)}"
         ),
         parse_mode="HTML"
     )
-    add_active_user(user.id)
+
+@router.message(F.text == "❓ Допомога")
+@router.message(Command("help"))
+async def cmd_help(message: types.Message):
+    text = (
+        "<b>📖 Як грати в Шпигуна?</b>\n\n"
+        "1. Гравці опиняються в одній локації (наприклад, Банк), але Шпигун не знає, де він.\n"
+        "2. <b>Завдання мирних:</b> вичислити шпигуна, ставлячи питання один одному.\n"
+        "3. <b>Завдання шпигуна:</b> зрозуміти, що це за локація, і не видати себе.\n\n"
+        "Ви можете створити власну кімнату і запросити друзів за кодом, або знайти випадкову гру."
+    )
+    await message.answer(text, parse_mode="HTML")
+
+# --- ЦЕ ВИПРАВЛЯЄ ПРОБЛЕМУ З ВВЕДЕННЯМ КОДУ ---
+@router.message(F.text)
+async def unknown_message(message: types.Message, state: FSMContext):
+    """
+    Цей хендлер ловить весь текст, який не підійшов під команди.
+    АЛЕ він перевіряє, чи не знаходиться гравець у процесі введення чогось важливого.
+    """
+    current_state = await state.get_state()
+    
+    # Якщо у гравця є активний стан (наприклад, він вводить код кімнати),
+    # то ми ігноруємо це повідомлення тут, щоб воно пішло в game.py
+    if current_state is not None:
+        return
+        
+    # Якщо станів немає, то це просто невідомий текст
+    if maintenance_blocked(message.from_user.id):
+        return
+
+    await message.answer(
+        "🤔 Я не розумію цього повідомлення.\nБудь ласка, користуйтеся кнопками меню.",
+        reply_markup=main_menu
+    )
