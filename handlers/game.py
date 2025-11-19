@@ -32,7 +32,7 @@ router = Router()
 logger = logging.getLogger(__name__)
 
 user_states = {}
-GAME_CALLSIGNS = ["Альфа", "Браво", "Чарлі", "Дельта", "Ехо", "Фокстрот", "Гольф", "Хантер", "Індіго", "Джульєтта", "Кіло", "Ліма", "Майк", "Нова", "Оскар", "Папа", "Ромео", "Сьєрра", "Танго", "Віктор", "Віскі", "Рентген", "Янкі", "Зулу"]
+GAME_CALLSIGNS = ["Альфа", "Браво", "Чарлі", "Дельта", "Ехо", "Фокстрот", "Гольф", "Хантер", "Індіго", "Джульєтта", "Кіло", "Ліма", "Майк", "Нова", "Оскар", "Папа", "Ромео", "Сьєрра", "Танго", "Віктор", "Віскі", "Рентген", "Янкі", "Зулу", "Прайм", "Тінь", "Привид"]
 
 # --- 1. СТАТИСТИКА (З АВТО-ОНОВЛЕННЯМ) ---
 @router.message(F.text == "📊 Моя Статистика")
@@ -40,7 +40,7 @@ GAME_CALLSIGNS = ["Альфа", "Браво", "Чарлі", "Дельта", "Е�
 async def cmd_stats(message: types.Message):
     if maintenance_blocked(message.from_user.id): return
     user = message.from_user
-    stats = await get_player_stats(user.id) # Ця функція тепер сама фіксить рівень!
+    stats = await get_player_stats(user.id)
     if not stats:
         await get_or_create_player(user.id, user.username)
         stats = await get_player_stats(user.id)
@@ -61,7 +61,7 @@ async def cmd_stats(message: types.Message):
     )
     await message.answer(text, parse_mode="HTML")
 
-# --- 2. МЕНЮ ---
+# --- 2. МЕНЮ І ПОШУК ---
 @router.message(F.text == "🎮 Знайти Гру")
 async def find_match(message: types.Message):
     if maintenance_blocked(message.from_user.id): return
@@ -136,7 +136,6 @@ async def _process_join_room(message: types.Message, token: str, state: FSMConte
         if user.id not in user_states: user_states[user.id] = UserState()
         user_states[user.id].current_room = token
         
-        # СПОВІЩЕННЯ ВСІМ ПРО НОВОГО ГРАВЦЯ
         for pid in room.players:
             if pid == user.id: continue
             try: await bot.send_message(pid, f"➕ {user.full_name} зайшов! ({len(room.players)}/6)")
@@ -152,6 +151,7 @@ async def _process_join_room(message: types.Message, token: str, state: FSMConte
 @router.message(PlayerState.waiting_for_token)
 async def join_room_process(message: types.Message, state: FSMContext):
     await _process_join_room(message, message.text, state)
+
 @router.message(F.text.regexp(r'^[A-Za-z0-9]{4,5}$'))
 async def quick_join(message: types.Message, state: FSMContext):
     current_state = await state.get_state()
@@ -201,14 +201,12 @@ async def leave_lobby(message: types.Message, state: FSMContext):
     await message.answer("✅ Ви вийшли.", reply_markup=main_menu)
     await state.clear()
 
-# --- БОТИ І СТАРТ ---
+# --- 3. БОТИ І СТАРТ ---
 @router.callback_query(F.data.startswith("add_bot_btn:"))
 async def on_add_bot_click(callback: types.CallbackQuery):
-    # Глобальна перевірка на адміна
     if not is_admin(callback.from_user.id):
          await callback.answer("Доступ заборонено", show_alert=True)
          return
-         
     token = callback.data.split(":")[1]
     room = rooms.get(token)
     if not room or callback.from_user.id != room.admin_id: return
@@ -226,7 +224,6 @@ async def on_add_bot_click(callback: types.CallbackQuery):
     room.players[bot_id] = bot_name
     await callback.answer(f"✅ {bot_name} додано!")
     
-    # Оновлення інфи всім
     for pid in room.players:
         try: await bot.send_message(pid, f"🤖 Додано бота: {bot_name} ({len(room.players)}/6)")
         except: pass
@@ -244,7 +241,7 @@ async def on_start_click(callback: types.CallbackQuery):
     except: pass
     await callback.message.answer("🎮 Почали!")
 
-# --- ГРА ---
+# --- 4. ГРА ---
 async def start_game(room: Room):
     players = list(room.players.keys())
     av_calls = GAME_CALLSIGNS.copy()
@@ -415,7 +412,15 @@ async def _finalize_suspect_vote(token: str, forced: bool):
         room.spy_guessed = True
         spy_id = room.spy_id
         if spy_id > 0: await bot.send_message(spy_id, "😱 ТЕБЕ ВИКРИЛИ! 30с на вгадування!", reply_markup=get_locations_keyboard(token, LOCATIONS))
-        await asyncio.sleep(30)
+        
+        # Чекаємо 30 сек, перевіряємо чи гра ще йде
+        for i in range(30, 0, -1):
+             if i <= 5:
+                 try: await bot.send_message(spy_id, f"⏳ {i}...")
+                 except: pass
+             await asyncio.sleep(1)
+             if token not in rooms or not rooms[token].game_started: return
+
         if rooms.get(token) and rooms[token].game_started: await end_game(token, False, "⏳ Шпигун не встиг.")
     else:
         room.players.pop(target, None)
@@ -468,8 +473,17 @@ def _find_user_room(user_id: int):
     return None, None
 
 async def _bot_behavior(bot_id, room):
+    """Бот, який голосує"""
     while room.game_started:
         await asyncio.sleep(random.uniform(5, 15))
+        
+        # 1. Голосування проти когось
         if room.voting_started and bot_id not in room.player_votes:
              cands = [u for u in room.players if u != bot_id]
              if cands: room.player_votes[bot_id] = random.choice(cands)
+
+        # 2. Дострокове голосування
+        if room.early_votes:
+            if bot_id not in room.votes_yes and bot_id not in room.votes_no:
+                if random.random() < 0.3: room.votes_yes.add(bot_id)
+                else: room.votes_no.add(bot_id)
