@@ -17,8 +17,8 @@ from config import (
     BOT_IDS, 
     BOT_AVATARS
 )
-# Імпортуємо функції з НОВОГО matchmaking
 from utils.helpers import maintenance_blocked, generate_room_token, is_admin
+# Імпортуємо нові функції з matchmaking
 from utils.matchmaking import enqueue_user, dequeue_user, is_in_queue
 from utils.states import PlayerState
 from database.crud import update_player_stats, get_or_create_player, get_player_stats
@@ -62,7 +62,6 @@ async def cmd_stats(message: types.Message):
     await message.answer(text, parse_mode="HTML")
 
 # --- 2. МЕНЮ І ПОШУК (ОНОВЛЕНО) ---
-
 @router.message(F.text == "🎮 Знайти Гру")
 async def find_match(message: types.Message):
     if maintenance_blocked(message.from_user.id): return
@@ -70,14 +69,19 @@ async def find_match(message: types.Message):
     user_id = message.from_user.id
     add_active_user(user_id)
     
-    # Надсилаємо повідомлення, яке буде оновлюватися
+    # Якщо вже в черзі
+    if is_in_queue(user_id):
+        await message.answer("Ви вже в черзі.", reply_markup=in_queue_menu)
+        return
+
+    # Надсилаємо повідомлення, яке будемо редагувати
     status_msg = await message.answer(
-        "🔍 Шукаємо гру...\n👥 У черзі: <b>1</b> гравець",
-        parse_mode="HTML",
+        "🔍 <b>Шукаємо гру...</b>\n⏳ У черзі: <b>1/6</b> гравців", 
+        parse_mode="HTML", 
         reply_markup=in_queue_menu
     )
     
-    # Додаємо в чергу разом з ID повідомлення
+    # Передаємо ID повідомлення в чергу
     enqueue_user(user_id, status_msg.message_id)
 
 @router.message(F.text == "❌ Скасувати Пошук")
@@ -112,7 +116,6 @@ async def create_room_cmd(message: types.Message):
     await message.answer("✅ Лобі створено.", reply_markup=in_lobby_menu)
     
     show_bot = is_admin(message.from_user.id)
-    
     await message.answer(
         f"Кімната: <code>{token}</code>", 
         parse_mode="HTML", 
@@ -433,12 +436,13 @@ async def _finalize_suspect_vote(token: str, forced: bool):
         spy_id = room.spy_id
         if spy_id > 0: await bot.send_message(spy_id, "😱 ТЕБЕ ВИКРИЛИ! 30с на вгадування!", reply_markup=get_locations_keyboard(token, LOCATIONS))
         
+        # Чекаємо 30 сек
         for i in range(30, 0, -1):
+             if rooms.get(token) and not rooms[token].game_started: return # Шпигун вже вгадав
              if i <= 5:
                  try: await bot.send_message(spy_id, f"⏳ {i}...")
                  except: pass
              await asyncio.sleep(1)
-             if token not in rooms or not rooms[token].game_started: return
 
         if rooms.get(token) and rooms[token].game_started: await end_game(token, False, "⏳ Шпигун не встиг.")
     else:
@@ -492,16 +496,13 @@ def _find_user_room(user_id: int):
     return None, None
 
 async def _bot_behavior(bot_id, room):
-    """Бот, який голосує"""
     while room.game_started:
         await asyncio.sleep(random.uniform(5, 15))
         
-        # 1. Голосування проти когось
         if room.voting_started and bot_id not in room.player_votes:
              cands = [u for u in room.players if u != bot_id]
              if cands: room.player_votes[bot_id] = random.choice(cands)
 
-        # 2. Дострокове голосування
         if room.early_votes:
             if bot_id not in room.votes_yes and bot_id not in room.votes_no:
                 if random.random() < 0.3: room.votes_yes.add(bot_id)
