@@ -8,6 +8,7 @@ from config import DB_PATH
 logger = logging.getLogger(__name__)
 
 def _ensure_db_dir(path: str) -> None:
+    """Створює директорію для БД, якщо її ще не існує."""
     directory = os.path.dirname(os.path.abspath(path))
     if directory and not os.path.exists(directory):
         os.makedirs(directory, exist_ok=True)
@@ -18,6 +19,7 @@ async def init_db():
         await db.execute("PRAGMA journal_mode=WAL;")
         await db.execute("PRAGMA synchronous=NORMAL;")
         
+        # Таблиця гравців
         await db.execute(
             '''
             CREATE TABLE IF NOT EXISTS players (
@@ -33,12 +35,13 @@ async def init_db():
             '''
         )
         
-        # Міграція для старих баз
+        # Міграція для старих баз (додаємо колонку level, якщо її немає)
         try:
             await db.execute("ALTER TABLE players ADD COLUMN level INTEGER DEFAULT 1")
         except Exception:
             pass
             
+        # Таблиця логів ігор
         await db.execute(
             '''
             CREATE TABLE IF NOT EXISTS game_logs (
@@ -60,6 +63,7 @@ async def get_player(user_id: int) -> Optional[Player]:
         async with db.execute("SELECT * FROM players WHERE user_id = ?", (user_id,)) as cursor:
             row = await cursor.fetchone()
             if row:
+                # Безпечне отримання level
                 lvl = row['level'] if 'level' in row.keys() and row['level'] else 1
                 return Player(
                     user_id=row['user_id'],
@@ -86,9 +90,8 @@ async def get_or_create_player(user_id: int, username: str = "") -> Player:
         await db.commit()
     return Player(user_id, username)
 
-# --- ФУНКЦІЯ, ЯКОЇ НЕ ВИСТАЧАЛО ДЛЯ ADMIN.PY ---
 async def update_player(user_id: int, **kwargs) -> None:
-    """Оновлює довільні поля гравця (використовується адмінкою)."""
+    """Оновлює довільні поля гравця (потрібно для адмінки)."""
     if not kwargs: return
     
     set_parts = []
@@ -104,7 +107,23 @@ async def update_player(user_id: int, **kwargs) -> None:
         await db.execute(sql, tuple(values))
         await db.commit()
 
+# --- ЦІЄЇ ФУНКЦІЇ НЕ ВИСТАЧАЛО ---
+async def get_recent_games(limit: int = 10) -> List[Dict[str, Any]]:
+    """Отримує останні ігри з логів."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT * FROM game_logs 
+            ORDER BY timestamp DESC 
+            LIMIT ?
+            """,
+            (limit,)
+        ) as cursor:
+            return [dict(row) async for row in cursor]
+
 async def update_player_stats(user_id: int, is_spy: bool, is_winner: bool) -> tuple[int, int, int]:
+    """Оновлює статистику та нараховує XP."""
     player = await get_or_create_player(user_id)
     old_level = player.level
     
