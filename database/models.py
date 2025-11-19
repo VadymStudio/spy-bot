@@ -26,11 +26,15 @@ def get_level_from_xp(total_xp: int) -> tuple[int, int, int]:
     return level, total_xp, xp_needed
 
 @dataclass
+class UserState:
+    current_room: str = ""
+
+@dataclass
 class Player:
     user_id: int
     username: str
     total_xp: int = 0
-    level: int = 1  # <--- НОВЕ ПОЛЕ
+    level: int = 1
     games_played: int = 0
     spy_wins: int = 0
     civilian_wins: int = 0
@@ -38,7 +42,7 @@ class Player:
     
     @property
     def level_info(self):
-        # Тепер ми просто беремо level з бази, але перераховуємо поточний прогрес
+        # Перераховуємо прогрес на основі загального XP
         _, current_xp, xp_needed = get_level_from_xp(self.total_xp)
         return self.level, current_xp, xp_needed
 
