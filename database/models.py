@@ -4,13 +4,11 @@ from typing import Dict, List, Optional, Set
 def calculate_xp_for_level(level: int) -> int:
     """Розраховує необхідний досвід для наступного рівня"""
     if level < 1: return 0
-    if level == 1: return 20 # 20 XP для 2 рівня
+    if level == 1: return 20 
     
-    # Формула прогресії
     min_coef = 1.2
     max_coef = 1.48
     coef = max(min_coef, max_coef - (level - 2) * 0.02)
-    
     return int(calculate_xp_for_level(level - 1) * coef)
 
 def get_level_from_xp(total_xp: int) -> tuple[int, int, int]:
@@ -42,7 +40,6 @@ class Player:
     
     @property
     def level_info(self):
-        # Перераховуємо прогрес на основі загального XP
         _, current_xp, xp_needed = get_level_from_xp(self.total_xp)
         return self.level, current_xp, xp_needed
 
