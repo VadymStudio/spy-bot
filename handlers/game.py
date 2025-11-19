@@ -10,7 +10,6 @@ from aiogram.fsm.context import FSMContext
 
 from bot import bot
 from config import (
-    matchmaking_queue, 
     add_active_user, 
     rooms, 
     LOCATIONS, 
@@ -18,8 +17,9 @@ from config import (
     BOT_IDS, 
     BOT_AVATARS
 )
+# Імпортуємо функції з НОВОГО matchmaking
 from utils.helpers import maintenance_blocked, generate_room_token, is_admin
-from utils.matchmaking import enqueue_user, dequeue_user
+from utils.matchmaking import enqueue_user, dequeue_user, is_in_queue
 from utils.states import PlayerState
 from database.crud import update_player_stats, get_or_create_player, get_player_stats
 from database.models import Room, UserState
@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 user_states = {}
 GAME_CALLSIGNS = ["Альфа", "Браво", "Чарлі", "Дельта", "Ехо", "Фокстрот", "Гольф", "Хантер", "Індіго", "Джульєтта", "Кіло", "Ліма", "Майк", "Нова", "Оскар", "Папа", "Ромео", "Сьєрра", "Танго", "Віктор", "Віскі", "Рентген", "Янкі", "Зулу", "Прайм", "Тінь", "Привид"]
 
-# --- 1. СТАТИСТИКА (З АВТО-ОНОВЛЕННЯМ) ---
+# --- 1. СТАТИСТИКА ---
 @router.message(F.text == "📊 Моя Статистика")
 @router.message(Command("stats"))
 async def cmd_stats(message: types.Message):
@@ -61,21 +61,32 @@ async def cmd_stats(message: types.Message):
     )
     await message.answer(text, parse_mode="HTML")
 
-# --- 2. МЕНЮ І ПОШУК ---
+# --- 2. МЕНЮ І ПОШУК (ОНОВЛЕНО) ---
+
 @router.message(F.text == "🎮 Знайти Гру")
 async def find_match(message: types.Message):
     if maintenance_blocked(message.from_user.id): return
-    add_active_user(message.from_user.id)
-    enqueue_user(message.from_user.id)
-    await message.answer("🔍 Шукаємо гру...", reply_markup=in_queue_menu)
+    
+    user_id = message.from_user.id
+    add_active_user(user_id)
+    
+    # Надсилаємо повідомлення, яке буде оновлюватися
+    status_msg = await message.answer(
+        "🔍 Шукаємо гру...\n👥 У черзі: <b>1</b> гравець",
+        parse_mode="HTML",
+        reply_markup=in_queue_menu
+    )
+    
+    # Додаємо в чергу разом з ID повідомлення
+    enqueue_user(user_id, status_msg.message_id)
 
 @router.message(F.text == "❌ Скасувати Пошук")
 async def cancel_search(message: types.Message):
-    if message.from_user.id in matchmaking_queue:
+    if is_in_queue(message.from_user.id):
         dequeue_user(message.from_user.id)
-        await message.answer("❌ Скасовано.", reply_markup=main_menu)
+        await message.answer("❌ Пошук скасовано.", reply_markup=main_menu)
     else:
-        await message.answer("ℹ️ Не в черзі.", reply_markup=main_menu)
+        await message.answer("ℹ️ Ви не в черзі.", reply_markup=main_menu)
 
 @router.message(F.text == "🚪 Створити Кімнату")
 async def create_room_cmd(message: types.Message):
@@ -100,7 +111,6 @@ async def create_room_cmd(message: types.Message):
     
     await message.answer("✅ Лобі створено.", reply_markup=in_lobby_menu)
     
-    # ТІЛЬКИ ГЛОБАЛЬНИЙ АДМІН БАЧИТЬ КНОПКУ "ДОДАТИ БОТА"
     show_bot = is_admin(message.from_user.id)
     
     await message.answer(
@@ -151,7 +161,6 @@ async def _process_join_room(message: types.Message, token: str, state: FSMConte
 @router.message(PlayerState.waiting_for_token)
 async def join_room_process(message: types.Message, state: FSMContext):
     await _process_join_room(message, message.text, state)
-
 @router.message(F.text.regexp(r'^[A-Za-z0-9]{4,5}$'))
 async def quick_join(message: types.Message, state: FSMContext):
     current_state = await state.get_state()
@@ -335,6 +344,15 @@ async def early_vote_req(message: types.Message):
     room.votes_no = set()
     for uid in room.players:
         if uid > 0: await bot.send_message(uid, "🗳️ Завершити гру?", reply_markup=get_early_vote_keyboard(token))
+    
+    room._early_vote_task = asyncio.create_task(_finalize_early_vote(token))
+
+async def _finalize_early_vote(token: str):
+    await asyncio.sleep(30)
+    room = rooms.get(token)
+    if not room or not room.game_started: return
+    for uid in room.players:
+        if uid > 0: await bot.send_message(uid, "⏰ Час вийшов. Граємо далі.")
 
 @router.callback_query(F.data.startswith("early_vote_"))
 async def early_vote_cb(cb: types.CallbackQuery):
@@ -351,10 +369,12 @@ async def early_vote_cb(cb: types.CallbackQuery):
     
     total = len(room.players)
     if len(room.votes_yes) > total / 2:
+        if hasattr(room, "_early_vote_task"): room._early_vote_task.cancel()
         for u in room.players: 
             if u > 0: await bot.send_message(u, "✅ Більшість ЗА.")
         await start_vote_procedure(token, forced=False)
     elif len(room.votes_no) >= total / 2:
+        if hasattr(room, "_early_vote_task"): room._early_vote_task.cancel()
         for u in room.players:
             if u > 0: await bot.send_message(u, "❌ Відхилено.")
 
@@ -413,7 +433,6 @@ async def _finalize_suspect_vote(token: str, forced: bool):
         spy_id = room.spy_id
         if spy_id > 0: await bot.send_message(spy_id, "😱 ТЕБЕ ВИКРИЛИ! 30с на вгадування!", reply_markup=get_locations_keyboard(token, LOCATIONS))
         
-        # Чекаємо 30 сек, перевіряємо чи гра ще йде
         for i in range(30, 0, -1):
              if i <= 5:
                  try: await bot.send_message(spy_id, f"⏳ {i}...")
