@@ -38,220 +38,133 @@ from database.models import Room, UserState
 router = Router()
 logger = logging.getLogger(__name__)
 
-# Глобальний словник для станів користувачів
 user_states = {}
 
-# --- ДОПОМІЖНА ФУНКЦІЯ ВХОДУ (ЩОБ НЕ ДУБЛЮВАТИ КОД) ---
+# --- ДОПОМІЖНА ФУНКЦІЯ ВХОДУ ---
 async def _process_join_room(message: types.Message, token: str, state: FSMContext):
     user = message.from_user
     token = token.upper().strip()
     
     if token not in rooms:
-        # Якщо це виглядає як код (4-5 символів), але його немає
         if len(token) in [4, 5] and token.isalnum():
-            await message.answer(f"❌ Кімнату з кодом <code>{token}</code> не знайдено.", parse_mode="HTML")
+            await message.answer(f"❌ Кімнату <code>{token}</code> не знайдено.", parse_mode="HTML")
         else:
             await message.answer("❌ Невірний код або кімнати не існує.", reply_markup=main_menu)
         return
 
     room = rooms[token]
     
-    # Перевірки
     if len(room.players) >= 6:
-        await message.answer("❌ Кімната вже заповнена (6/6).")
+        await message.answer("❌ Кімната заповнена.")
         return
     
     if room.game_started:
-        await message.answer("❌ Гра в цій кімнаті вже йде.")
+        await message.answer("❌ Гра вже йде.")
         return
 
-    # Логіка входу
     if user.id in room.players:
-        await message.answer("ℹ️ Ви вже в цій кімнаті.", reply_markup=in_lobby_menu)
+        await message.answer("ℹ️ Ви вже тут.", reply_markup=in_lobby_menu)
     else:
         room.players[user.id] = user.full_name or (user.username or str(user.id))
         room.last_activity = int(datetime.now().timestamp())
         
-        if user.id not in user_states:
-            user_states[user.id] = UserState()
+        if user.id not in user_states: user_states[user.id] = UserState()
         user_states[user.id].current_room = token
 
-        # Сповіщаємо інших
         for pid in room.players:
             if pid == user.id: continue
-            try:
-                await bot.send_message(pid, f"👤 {user.full_name} приєднався! 👥 {len(room.players)}/6")
-            except Exception:
-                pass
+            try: await bot.send_message(pid, f"👤 {user.full_name} зайшов! ({len(room.players)}/6)")
+            except: pass
         
-        await message.answer(
-            f"✅ Ви приєднались до кімнати <code>{token}</code>\n👥 Гравців: {len(room.players)}/6",
-            parse_mode="HTML",
-            reply_markup=in_lobby_menu,
-        )
-        
-        # Показуємо меню лобі (як у адміна, але без кнопки старту)
-        await message.answer(
-            "Очікуємо початку гри...",
-            reply_markup=get_in_lobby_keyboard(is_admin=False, room_token=token)
-        )
+        await message.answer(f"✅ Ви в кімнаті <code>{token}</code>", parse_mode="HTML", reply_markup=in_lobby_menu)
+        await message.answer("Меню:", reply_markup=get_in_lobby_keyboard(False, token))
 
     await state.clear()
 
-
-# --- ХЕНДЛЕРИ ---
+# --- BASIC HANDLERS ---
 
 @router.message(F.text == "🎮 Знайти Гру")
 async def find_match(message: types.Message):
-    if maintenance_blocked(message.from_user.id):
-        await message.answer("🟠 Режим обслуговування.")
-        return
-    user_id = message.from_user.id
-    add_active_user(user_id)
-    enqueue_user(user_id)
-    await message.answer("🔍 Шукаємо гру...", reply_markup=in_queue_menu)
-
+    if maintenance_blocked(message.from_user.id): return
+    add_active_user(message.from_user.id)
+    enqueue_user(message.from_user.id)
+    await message.answer("🔍 Шукаємо...", reply_markup=in_queue_menu)
 
 @router.message(F.text == "❌ Скасувати Пошук")
 async def cancel_search(message: types.Message):
-    user_id = message.from_user.id
-    if user_id in matchmaking_queue:
-        dequeue_user(user_id)
-        await message.answer("❌ Пошук скасовано.", reply_markup=main_menu)
+    if message.from_user.id in matchmaking_queue:
+        dequeue_user(message.from_user.id)
+        await message.answer("❌ Скасовано.", reply_markup=main_menu)
     else:
         await message.answer("ℹ️ Ви не в черзі.", reply_markup=main_menu)
 
-
 @router.message(F.text == "🚪 Створити Кімнату")
 async def create_room_cmd(message: types.Message):
-    if maintenance_blocked(message.from_user.id):
-        await message.answer("🟠 Режим обслуговування.")
-        return
-
-    for room in rooms.values():
-        if message.from_user.id in room.players:
-            await message.answer("❌ Ви вже в іншій кімнаті. Спочатку вийдіть.")
+    if maintenance_blocked(message.from_user.id): return
+    for r in rooms.values():
+        if message.from_user.id in r.players:
+            await message.answer("❌ Вийдіть з поточної кімнати.")
             return
 
     token = generate_room_token()
-    room = Room(
-        token=token,
-        admin_id=message.from_user.id,
-        players={message.from_user.id: message.from_user.full_name},
-        player_roles={},
-        player_votes={},
-        early_votes=set(),
-        game_started=False
-    )
+    room = Room(token=token, admin_id=message.from_user.id, players={message.from_user.id: message.from_user.full_name}, player_roles={}, player_votes={}, early_votes=set())
     rooms[token] = room
     
-    if message.from_user.id not in user_states:
-        user_states[message.from_user.id] = UserState()
+    if message.from_user.id not in user_states: user_states[message.from_user.id] = UserState()
     user_states[message.from_user.id].current_room = token
     
     await message.answer("✅ Лобі створено.", reply_markup=in_lobby_menu)
-    await message.answer(
-        f"Кімната: <code>{token}</code>\n\nЗапрошуйте друзів!",
-        parse_mode="HTML",
-        reply_markup=get_in_lobby_keyboard(is_admin=True, room_token=token)
-    )
+    await message.answer(f"Код: <code>{token}</code>", parse_mode="HTML", reply_markup=get_in_lobby_keyboard(True, token))
 
 @router.callback_query(F.data.startswith("add_bot_btn:"))
 async def on_add_bot_click(callback: types.CallbackQuery):
     token = callback.data.split(":")[1]
     room = rooms.get(token)
-    if not room: return
-    if callback.from_user.id != room.admin_id:
-        await callback.answer("❌ Тільки адмін!", show_alert=True)
-        return
-    if room.game_started:
-        await callback.answer("Гра вже почалася!", show_alert=True)
-        return
+    if not room or callback.from_user.id != room.admin_id or room.game_started: return
     
     bot_id = None
     for bid in BOT_IDS:
         if bid not in room.players:
             bot_id = bid
             break
-    
-    if bot_id is None:
-        await callback.answer("❌ Максимум ботів!", show_alert=True)
-        return
-    
-    bot_num = abs(bot_id)
-    bot_name = f"{BOT_AVATARS[bot_num % len(BOT_AVATARS)]} Бот-{bot_num}"
-    room.players[bot_id] = bot_name
-    
-    await callback.answer(f"✅ {bot_name} додано!")
-    try:
-        await callback.message.edit_text(
-            f"Кімната: <code>{token}</code>\n👥 Гравців: {len(room.players)}/6\n\nСписок: {', '.join(room.players.values())}",
-            parse_mode="HTML",
-            reply_markup=get_in_lobby_keyboard(is_admin=True, room_token=token)
-        )
-    except: pass
-
-@router.message(Command("add_bot"))
-async def cmd_add_bot(message: types.Message):
-    token, room = _find_user_room(message.from_user.id)
-    if not room or message.from_user.id != room.admin_id: return
-    if room.game_started: return
-    
-    bot_id = None
-    for bid in BOT_IDS:
-        if bid not in room.players:
-            bot_id = bid
-            break
-    if bot_id is None:
-        await message.answer("❌ Максимум ботів.")
+    if not bot_id:
+        await callback.answer("Максимум ботів!", show_alert=True)
         return
         
-    bot_num = abs(bot_id)
-    bot_name = f"{BOT_AVATARS[bot_num % len(BOT_AVATARS)]} Бот-{bot_num}"
+    bot_name = f"{BOT_AVATARS[abs(bot_id) % len(BOT_AVATARS)]} Бот-{abs(bot_id)}"
     room.players[bot_id] = bot_name
-    await message.answer(f"✅ {bot_name} додано.")
-
+    await callback.answer(f"✅ {bot_name} додано!")
+    try: await callback.message.edit_text(f"Кімната: <code>{token}</code>\n👥 {len(room.players)}/6\n{', '.join(room.players.values())}", parse_mode="HTML", reply_markup=get_in_lobby_keyboard(True, token))
+    except: pass
 
 @router.message(F.text == "🤝 Приєднатися")
-async def join_room_ask_token(message: types.Message, state: FSMContext):
+async def join_room_ask(message: types.Message, state: FSMContext):
     if maintenance_blocked(message.from_user.id): return
-    await message.answer("🔢 Введіть код кімнати (або просто напишіть його в чат):")
+    await message.answer("🔢 Введіть код:")
     await state.set_state(PlayerState.waiting_for_token)
 
 @router.message(PlayerState.waiting_for_token)
-async def join_room_process_token(message: types.Message, state: FSMContext):
+async def join_room_process(message: types.Message, state: FSMContext):
     await _process_join_room(message, message.text, state)
 
-# --- РОЗУМНИЙ ПЕРЕХОПЛЮВАЧ КОДУ ---
 @router.message(F.text.regexp(r'^[A-Za-z0-9]{4,5}$'))
-async def quick_join_room(message: types.Message, state: FSMContext):
-    """
-    Якщо користувач пише 4-5 літер (схоже на код), пробуємо підключити.
-    Працює навіть без натискання 'Приєднатися'.
-    """
-    # Перевіряємо, чи користувач вже не в грі
-    current_state = await state.get_state()
-    if current_state in [PlayerState.in_game, PlayerState.in_lobby]:
-        return # Не реагуємо, якщо він вже грає
-
+async def quick_join(message: types.Message, state: FSMContext):
+    if await state.get_state() in [PlayerState.in_game, PlayerState.in_lobby]: return
     token = message.text.upper().strip()
-    
-    # Якщо такий код є в кімнатах - з'єднуємо
-    if token in rooms:
-        await _process_join_room(message, token, state)
-    else:
-        await message.answer(f"❌ Кімнату <code>{token}</code> не знайдено.", parse_mode="HTML")
+    if token in rooms: await _process_join_room(message, token, state)
+    else: await message.answer(f"❌ Кімнату <code>{token}</code> не знайдено.", parse_mode="HTML")
 
 @router.message(F.text == "🚪 Покинути Лобі")
+@router.message(F.text == "🚪 Покинути Гру")
 async def leave_lobby(message: types.Message, state: FSMContext):
     user = message.from_user
     target_token = None
     for t, r in rooms.items():
-        if user.id in r.players and not r.game_started:
+        if user.id in r.players:
             target_token = t
             break
     if not target_token:
-        await message.answer("ℹ️ Ви не в лобі.", reply_markup=main_menu)
+        await message.answer("ℹ️ Ви не в кімнаті.", reply_markup=main_menu)
         await state.clear()
         return
 
@@ -259,17 +172,23 @@ async def leave_lobby(message: types.Message, state: FSMContext):
     if user.id in room.players: del room.players[user.id]
     if user.id in user_states: del user_states[user.id]
 
+    # Якщо вийшли під час гри
+    if room.game_started:
+         # Якщо гравців стало < 3, гра ламається
+         if len(room.players) < 3:
+             await end_game(target_token, True, "👥 Недостатньо гравців. Шпигун переміг (технічна перемога).")
+             return
+
     if not room.players:
         del rooms[target_token]
-        await message.answer("🚪 Ви вийшли. Кімнату закрито.", reply_markup=main_menu)
+        await message.answer("🚪 Ви вийшли.", reply_markup=main_menu)
         return
 
     if user.id == room.admin_id:
-        human_players = [p for p in room.players if p > 0]
-        if human_players:
-            room.admin_id = human_players[0]
-            try:
-                await bot.send_message(room.admin_id, "👑 Ви новий адмін.", reply_markup=get_in_lobby_keyboard(True, target_token))
+        humans = [p for p in room.players if p > 0]
+        if humans:
+            room.admin_id = humans[0]
+            try: await bot.send_message(room.admin_id, "👑 Ви адмін.", reply_markup=get_in_lobby_keyboard(True, target_token))
             except: pass
         else:
             del rooms[target_token]
@@ -283,7 +202,7 @@ async def leave_lobby(message: types.Message, state: FSMContext):
     await state.clear()
 
 
-# ------------------- ЛОГІКА ГРИ -------------------
+# ------------------- GAME LOGIC -------------------
 
 def _find_user_room(user_id: int):
     for t, r in rooms.items():
@@ -292,319 +211,279 @@ def _find_user_room(user_id: int):
 
 async def _game_timer(token: str):
     try:
+        # Чекаємо час гри
         await asyncio.sleep(GAME_DURATION_SECONDS)
         room = rooms.get(token)
         if room and room.game_started:
-            await end_game(token, spy_won=True, reason="⏰ Час вичерпано! Шпигун переміг.")
+            # Час вийшов! Примусове голосування.
+            room.voting_started = True # Це прапор примусового голосування (is_forced)
+            
+            for uid in room.players:
+                try: await bot.send_message(uid, "⏰ ЧАС ВИЙШОВ! Негайно голосуйте!", reply_markup=types.ReplyKeyboardRemove())
+                except: pass
+            
+            # Запускаємо голосування з прапором forced=True
+            await start_vote_procedure(token, forced=True)
+            
     except asyncio.CancelledError: pass
 
 @router.callback_query(F.data.startswith("start_game:"))
-async def on_start_game_click(callback: types.CallbackQuery):
+async def on_start_click(callback: types.CallbackQuery):
     token = callback.data.split(":")[1]
     room = rooms.get(token)
-    if not room: return
-    if callback.from_user.id != room.admin_id:
-        await callback.answer("Тільки адмін!", show_alert=True)
-        return
+    if not room or callback.from_user.id != room.admin_id: return
     if len(room.players) < 3:
         await callback.answer("Треба мін. 3 гравці!", show_alert=True)
         return
-    
     await start_game(room)
-    try: await callback.message.edit_text(f"🎮 Гра почалася! ({len(room.players)} гравців)")
+    try: await callback.message.edit_text(f"🎮 Гра почалася!")
     except: pass
 
 async def start_game(room: Room):
     players = list(room.players.keys())
-    human_players = [p for p in players if p > 0]
-    if not human_players: 
-        human_players = players
-    spy_id = random.choice(human_players)
+    humans = [p for p in players if p > 0] or players
+    spy_id = random.choice(humans)
     
     room.spy_id = spy_id
     room.location = random.choice(LOCATIONS)
     room.game_started = True
+    room.voting_started = False
+    room.spy_guessed = False
     
-    for player_id in players:
-        try:
-            if player_id == spy_id:
-                room.player_roles[player_id] = "spy"
-                if player_id > 0:
-                    await bot.send_message(
-                        player_id,
-                        "🕵️ *Ви ШПИГУН!* Вам потрібно з'ясувати локацію, не видаючи себе.",
-                        parse_mode="Markdown",
-                        reply_markup=in_game_menu
-                    )
-            else:
-                room.player_roles[player_id] = "civilian"
-                if player_id > 0:
-                    await bot.send_message(
-                        player_id,
-                        f"👥 Ви ЦИВІЛЬНИЙ. Локація: *{room.location}*",
-                        parse_mode="Markdown",
-                        reply_markup=in_game_menu
-                    )
-                else:
-                    room.player_roles[player_id] = "civilian"
-        except Exception as e:
-            logger.error(f"Помилка при надсиланні ролі гравцю {player_id}: {e}")
+    for pid in players:
+        role = "spy" if pid == spy_id else "civilian"
+        room.player_roles[pid] = role
+        txt = "🕵️ ТИ — ШПИГУН! Вгадай локацію." if role == "spy" else f"👥 МИРНИЙ. Локація: {room.location}"
+        try: 
+            if pid > 0: await bot.send_message(pid, txt, reply_markup=in_game_menu)
+        except: pass
     
     room.end_time = int(time.time()) + GAME_DURATION_SECONDS
     room._timer_task = asyncio.create_task(_game_timer(room.token))
     
-    for bot_id in BOT_IDS:
-        if bot_id in room.players:
-            asyncio.create_task(_bot_behavior(bot_id, room))
-
-@router.message(F.text == "❓ Моя роль")
-async def my_role(message: types.Message):
-    token, room = _find_user_room(message.from_user.id)
-    if not room or not room.game_started:
-        await message.answer("ℹ️ Зараз ви не у грі.")
-        return
-    role = room.player_roles.get(message.from_user.id)
-    if role == "spy":
-        await message.answer("🕵️ Ти ШПИГУН.")
-    else:
-        await message.answer(f"👥 Ти ЦИВІЛЬНИЙ. Локація: <b>{room.location}</b>", parse_mode="HTML")
-
+    for bid in BOT_IDS:
+        if bid in room.players: asyncio.create_task(_bot_behavior(bid, room))
 
 async def end_game(token: str, spy_won: bool, reason: str, grant_xp: bool = True):
     room = rooms.get(token)
-    if not room or not room.game_started:
-        return
+    if not room: return
+    
+    # Зупиняємо таймери
+    if hasattr(room, "_timer_task"): room._timer_task.cancel()
+    if hasattr(room, "_voting_task"): room._voting_task.cancel()
+    if hasattr(room, "_early_vote_task"): room._early_vote_task.cancel()
+
     room.game_started = False
-    task = getattr(room, "_timer_task", None)
-    if task and not task.done():
-        task.cancel()
+    
     players = list(room.players.keys())
+    res_text = f"🏁 {reason}\n\n🕵️ Шпигуном був: {room.players.get(room.spy_id, 'Unknown')}\n📍 Локація: {room.location}"
+    
     for uid in players:
-        try:
-            await bot.send_message(uid, f"🏁 Гру завершено. {reason}", reply_markup=main_menu)
-        except Exception:
-            pass
+        try: await bot.send_message(uid, res_text, reply_markup=main_menu)
+        except: pass
+        
     if grant_xp:
         for uid in players:
             if uid < 0: continue
             is_spy = (uid == room.spy_id)
-            winner = (spy_won and is_spy) or ((not spy_won) and (not is_spy))
+            is_winner = (spy_won and is_spy) or (not spy_won and not is_spy)
             try:
-                level_before, current_xp, xp_needed = await update_player_stats(uid, is_spy=is_spy, is_winner=winner)
-                player = await get_or_create_player(uid, "")
-                level_after, _, _ = player.level_info
-                if level_after > level_before:
-                    await bot.send_message(uid, f"🎉 Вітаємо! Ви отримали {level_after} рівень!")
-            except Exception as e:
-                logger.error(f"Помилка XP {uid}: {e}")
+                lvl_old, _, _ = await update_player_stats(uid, is_spy, is_winner)
+                p = await get_or_create_player(uid, "")
+                if p.level_info[0] > lvl_old:
+                    await bot.send_message(uid, f"🎉 Новий рівень: {p.level_info[0]}!")
+            except: pass
 
-
-# ------------------- Дострокове завершення -------------------
+# --- ГОЛОСУВАННЯ (EARLY VOTE -> MAIN VOTE) ---
 
 @router.message(F.text == "🗳️ Достр. Голосування")
-async def early_vote_request(message: types.Message):
+async def early_vote_req(message: types.Message):
     token, room = _find_user_room(message.from_user.id)
-    if not room or not room.game_started:
-        await message.answer("ℹ️ Зараз ви не у грі.")
-        return
+    if not room or not room.game_started: return
+    
+    # Запускаємо голосування ТАК/НІ
     room.early_votes = set()
-    voters = list(room.players.keys())
-    for uid in voters:
-        try:
-            if uid > 0:
-                await bot.send_message(uid, "🗳️ Достроково завершити гру?", reply_markup=get_early_vote_keyboard(token))
-        except Exception:
-            pass
+    for uid in room.players:
+        if uid > 0: await bot.send_message(uid, "🗳️ Завершити гру і голосувати?", reply_markup=get_early_vote_keyboard(token))
+    
+    # Таймер на прийняття рішення
+    room._early_vote_task = asyncio.create_task(_finalize_early_vote(token))
 
-    async def _finalize():
-        await asyncio.sleep(30)
-        if token not in rooms or not rooms[token].game_started:
-            return
-        votes_yes = len(room.early_votes)
-        total = len(room.players)
-        if votes_yes > total / 2:
-            await end_game(token, spy_won=False, reason="🗳️ Гру завершено достроково більшістю.", grant_xp=False)
-        else:
-            for uid in list(room.players.keys()):
-                try:
-                    if uid > 0:
-                        await bot.send_message(uid, f"ℹ️ Дострокове завершення не прийнято ({votes_yes}/{total}).")
-                except Exception:
-                    pass
-
-    room._early_vote_task = asyncio.create_task(_finalize())
-
-
-@router.callback_query(F.data.startswith("early_vote_") )
-async def early_vote_callback(callback: types.CallbackQuery):
-    try:
-        parts = callback.data.split(":")
-        action = parts[0]
-        token = parts[1]
-    except Exception:
-        await callback.answer()
-        return
+async def _finalize_early_vote(token: str):
+    await asyncio.sleep(30)
     room = rooms.get(token)
-    if not room or not room.game_started:
-        await callback.answer()
-        return
-    if callback.from_user.id not in room.players:
-        await callback.answer()
-        return
-    if action == "early_vote_yes":
-        room.early_votes.add(callback.from_user.id)
-        await callback.answer("Ви проголосували: Так")
+    if not room or not room.game_started: return
+    
+    votes = len(room.early_votes)
+    if votes > len(room.players) / 2:
+        for uid in room.players:
+            try: await bot.send_message(uid, "✅ Більшість 'ЗА'. Починаємо пошук шпигуна!")
+            except: pass
+        await start_vote_procedure(token, forced=False)
     else:
-        await callback.answer("Ви проголосували: Ні")
+        for uid in room.players:
+            try: await bot.send_message(uid, "❌ Голосування відхилено. Граємо далі.")
+            except: pass
 
+@router.callback_query(F.data.startswith("early_vote_"))
+async def early_vote_cb(cb: types.CallbackQuery):
+    token = cb.data.split(":")[1]
+    room = rooms.get(token)
+    if not room: return
+    if "yes" in cb.data: room.early_votes.add(cb.from_user.id)
+    await cb.answer("Прийнято")
 
-# ------------------- Голосування проти гравця -------------------
+# --- ПРОЦЕДУРА ГОЛОСУВАННЯ ЗА ШПИГУНА ---
 
 @router.message(Command("vote"))
-async def start_vote(message: types.Message):
+async def manual_vote(message: types.Message):
+    # Дозволяємо ручне голосування, якщо ще не йде
     token, room = _find_user_room(message.from_user.id)
-    if not room or not room.game_started:
-        await message.answer("ℹ️ Зараз ви не у грі.")
-        return
+    if room and room.game_started:
+        await start_vote_procedure(token, forced=False)
+
+async def start_vote_procedure(token: str, forced: bool = False):
+    room = rooms.get(token)
+    if not room: return
+    
     room.player_votes = {}
-    players = dict(room.players)
-    for voter_id in players.keys():
-        if voter_id < 0: continue 
-        try:
-            kb = get_voting_keyboard(token, players, voter_id)
-            await bot.send_message(voter_id, "🗳️ Кого ви підозрюєте?", reply_markup=kb)
-        except Exception:
-            pass
-
-    async def _finalize_vote():
-        await asyncio.sleep(45)
-        if token not in rooms or not rooms[token].game_started:
-            return
-        tally = {}
-        for v in room.player_votes.values():
-            tally[v] = tally.get(v, 0) + 1
-        if not tally:
-            for uid in list(room.players.keys()):
-                try:
-                    await bot.send_message(uid, "ℹ️ Голосування не відбулось.")
-                except Exception:
-                    pass
-            return
-        max_votes = max(tally.values())
-        top = [pid for pid, cnt in tally.items() if cnt == max_votes]
-        if len(top) != 1:
-            for uid in list(room.players.keys()):
-                try:
-                    await bot.send_message(uid, "ℹ️ Нічия. Нікого не вигнали.")
-                except Exception:
-                    pass
-            return
-        target = top[0]
-        for uid in list(room.players.keys()):
-            try:
-                await bot.send_message(uid, f"🚷 Вигнано гравця: {room.players.get(target, str(target))}")
-            except Exception:
-                pass
-        if target == room.spy_id:
-            await end_game(token, spy_won=False, reason="✅ Шпигуна викрито! Перемога цивільних.")
-            return
-        room.players.pop(target, None)
-        room.player_roles.pop(target, None)
-        room.player_votes = {}
-        if len(room.players) < 3:
-            await end_game(token, spy_won=True, reason="👥 Занадто мало гравців для продовження. Перемога шпигуна.")
-
-    room._voting_task = asyncio.create_task(_finalize_vote())
-
+    # forced = True означає, що це голосування через таймер (якщо нічия - шпигун виграє)
+    # forced = False означає, що це дострокове (якщо нічия - граємо далі)
+    room.voting_started = forced # Використаємо цей прапор або додамо новий атрибут, хай поки буде передаватись у finalize
+    
+    for uid in room.players:
+        if uid > 0:
+            await bot.send_message(uid, "🗳️ ХТО ШПИГУН? Оберіть гравця:", reply_markup=get_voting_keyboard(token, room.players, uid))
+    
+    # 45 секунд на вибір
+    room._voting_task = asyncio.create_task(_finalize_suspect_vote(token, forced))
 
 @router.callback_query(F.data.startswith("vote:"))
-async def vote_callback(callback: types.CallbackQuery):
-    try:
-        _, token, target_str = callback.data.split(":", 2)
-        target_id = int(target_str)
-    except Exception:
-        await callback.answer()
-        return
+async def vote_cb(cb: types.CallbackQuery):
+    token = cb.data.split(":")[1]
+    target = int(cb.data.split(":")[2])
     room = rooms.get(token)
-    if not room or not room.game_started:
-        await callback.answer()
-        return
-    if callback.from_user.id not in room.players:
-        await callback.answer()
-        return
-    room.player_votes[callback.from_user.id] = target_id
-    await callback.answer("Ваш голос враховано")
+    if room:
+        room.player_votes[cb.from_user.id] = target
+        await cb.answer("Голос прийнято")
 
+async def _finalize_suspect_vote(token: str, forced: bool):
+    await asyncio.sleep(45)
+    room = rooms.get(token)
+    if not room or not room.game_started: return
+    
+    tally = {}
+    for v in room.player_votes.values():
+        tally[v] = tally.get(v, 0) + 1
+    
+    if not tally:
+        # Ніхто не проголосував
+        if forced: await end_game(token, True, "⏰ Час вийшов, ніхто не голосував. Перемога Шпигуна!")
+        else: 
+            for uid in room.players:
+                try: await bot.send_message(uid, "ℹ️ Ніхто не проголосував. Граємо далі.")
+                except: pass
+        return
 
-# ------------------- Вгадування локації шпигуном -------------------
+    max_votes = max(tally.values())
+    top = [pid for pid, cnt in tally.items() if cnt == max_votes]
+    
+    if len(top) != 1:
+        # НІЧИЯ
+        if forced:
+            await end_game(token, True, "⚖️ Нічия у фінальному голосуванні. Перемога Шпигуна!")
+        else:
+            for uid in room.players:
+                try: await bot.send_message(uid, "⚖️ Нічия. Нікого не вигнали. Граємо далі.")
+                except: pass
+        return
+    
+    target = top[0]
+    target_name = room.players.get(target, "Unknown")
+    
+    for uid in room.players:
+        try: await bot.send_message(uid, f"👉 Більшістю голосів обрано: {target_name}")
+        except: pass
+        
+    # Перевіряємо роль
+    if target == room.spy_id:
+        # ШПИГУН СПІЙМАНИЙ -> ОСТАННІЙ ШАНС
+        room.spy_guessed = True # Блокуємо звичайні дії
+        spy_id = room.spy_id
+        
+        for uid in room.players:
+             try: await bot.send_message(uid, f"😲 {target_name} — це ШПИГУН! Але у нього є шанс вгадати локацію...")
+             except: pass
+        
+        # Меню для шпигуна
+        if spy_id > 0:
+            await bot.send_message(spy_id, "📍 ТЕБЕ ВИКРИЛИ! Вгадай локацію, щоб виграти!", reply_markup=get_locations_keyboard(token, LOCATIONS))
+            
+            # Авто-програш, якщо шпигун тупить 30 сек
+            async def _spy_last_chance_timer():
+                await asyncio.sleep(30)
+                if rooms.get(token) and rooms[token].game_started:
+                    await end_game(token, False, "⏳ Шпигун не встиг обрати локацію. Перемога мирних!")
+            asyncio.create_task(_spy_last_chance_timer())
+            
+    else:
+        # Вигнали мирного
+        room.players.pop(target, None) # Видаляємо гравця
+        room.player_roles.pop(target, None)
+        room.player_votes = {}
+        
+        for uid in room.players:
+             try: await bot.send_message(uid, f"❌ {target_name} був МИРНИМ! Гра триває.")
+             except: pass
+             
+        if len(room.players) < 3:
+            await end_game(token, True, "👥 Занадто мало гравців. Перемога Шпигуна.")
+
+# --- ВГАДУВАННЯ ЛОКАЦІЇ (ШПИГУН) ---
 
 @router.message(Command("spy_guess"))
-async def spy_guess(message: types.Message):
+async def spy_guess_cmd(message: types.Message):
     token, room = _find_user_room(message.from_user.id)
-    if not room or not room.game_started:
-        await message.answer("ℹ️ Зараз ви не у грі.")
-        return
-    if message.from_user.id != room.spy_id:
-        await message.answer("❌ Лише шпигун може робити здогад локації.")
-        return
-    kb = get_locations_keyboard(token, LOCATIONS, columns=3)
-    await message.answer("📍 Оберіть локацію, яку ви вважаєте правильною:", reply_markup=kb)
-
+    if room and message.from_user.id == room.spy_id:
+        await message.answer("Обери локацію:", reply_markup=get_locations_keyboard(token, LOCATIONS))
 
 @router.callback_query(F.data.startswith("guess:"))
-async def spy_guess_callback(callback: types.CallbackQuery):
-    try:
-        _, token, location = callback.data.split(":", 2)
-    except Exception:
-        await callback.answer()
-        return
+async def on_location_guess(cb: types.CallbackQuery):
+    token = cb.data.split(":")[1]
+    loc = cb.data.split(":")[2]
     room = rooms.get(token)
-    if not room or not room.game_started:
-        await callback.answer()
+    if not room: return
+    
+    if cb.from_user.id != room.spy_id:
+        await cb.answer("Ти не шпигун!")
         return
-    if callback.from_user.id != room.spy_id:
-        await callback.answer("Це діє лише для шпигуна")
-        return
-    if location == room.location:
-        await callback.answer("✅ Вірно!")
-        await end_game(token, spy_won=True, reason=f"🕵️ Шпигун вгадав локацію: {location}")
+        
+    if loc.lower() == room.location.lower():
+        await end_game(token, True, f"🗺️ Шпигун ВГАДАВ локацію ({loc})! Перемога Шпигуна!")
     else:
-        await callback.answer("❌ Невірно")
+        await end_game(token, False, f"❌ Шпигун помилився ({loc}). Правильна локація: {room.location}. Перемога Мирних!")
 
+# --- ЧАТ МІЖ ГРАВЦЯМИ (РОЗМІСТИТИ В КІНЦІ!) ---
 
-async def _bot_behavior(bot_id: int, room: Room):
-    """Поведінка бота під час гри"""
-    if bot_id not in room.players or not room.game_started:
-        return
+@router.message(F.text & ~F.text.startswith("/"))
+async def room_chat(message: types.Message):
+    """Пересилає повідомлення іншим гравцям у кімнаті"""
+    token, room = _find_user_room(message.from_user.id)
+    if not room: return # Не в кімнаті - ігноруємо
     
-    is_spy = (bot_id == room.spy_id)
-    bot_name = room.players[bot_id]
+    sender_name = room.players.get(message.from_user.id, "Unknown")
+    formatted_text = f"<b>{sender_name}:</b> {message.text}"
     
-    # Випадкова затримка перед початком дій
-    await asyncio.sleep(random.uniform(1, 3))
-    
-    # Якщо бот - цивільний, він може голосувати
-    if not is_spy and room.voting_started and not room.voting_ended: # Use getattr if properties missing in Room
-        # Бот-цивільний голосує за випадкового гравця
-        players = [p for p in room.players.keys() 
-                  if p != bot_id and room.player_roles.get(p) != "civilian"]
-        if players:
-            target = random.choice(players)
-            room.player_votes[bot_id] = target
-            logger.debug(f"Бот {bot_name} голосує за {room.players.get(target, target)}")
-    
-    # Якщо бот - шпигун, він намагається вгадати локацію
-    if is_spy and room.spy_guessing and not room.spy_guessed:
-        await asyncio.sleep(random.uniform(2, 5))
-        # Шпигун робить спробу вгадати (30% шанс вгадати)
-        if random.random() < 0.3:
-            room.spy_guess = random.choice(LOCATIONS)
-            room.spy_guessed = True
-            logger.debug(f"Бот-шпигун {bot_name} намагається вгадати локацію: {room.spy_guess}")
-            
-            # Перевіряємо, чи вгадав
-            if room.spy_guess.lower() == room.location.lower():
-                await end_game(room.token, spy_won=True, reason="✅ Шпигун вгадав локацію!")
-            else:
-                await end_game(room.token, spy_won=False, 
-                             reason=f"❌ Шпигун не вгадав. Це було: {room.location}")
+    for uid in room.players:
+        if uid == message.from_user.id: continue # Собі не шлемо
+        if uid < 0: continue # Ботам не шлемо
+        try:
+            await bot.send_message(uid, formatted_text, parse_mode="HTML")
+        except: pass
+
+# --- ПОВЕДІНКА БОТІВ ---
+async def _bot_behavior(bot_id, room):
+    while room.game_started:
+        await asyncio.sleep(random.uniform(10, 30))
+        # Тут можна додати випадкові фрази в чат від ботів
+        # Але поки залишимо тільки логіку голосування, якщо вона викликана
