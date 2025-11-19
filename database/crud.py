@@ -18,7 +18,6 @@ async def init_db():
         await db.execute("PRAGMA journal_mode=WAL;")
         await db.execute("PRAGMA synchronous=NORMAL;")
         
-        # Створення таблиці (якщо з нуля)
         await db.execute(
             '''
             CREATE TABLE IF NOT EXISTS players (
@@ -34,12 +33,11 @@ async def init_db():
             '''
         )
         
-        # --- МІГРАЦІЯ (Додаємо колонку level, якщо це стара база) ---
+        # Міграція для старих баз
         try:
             await db.execute("ALTER TABLE players ADD COLUMN level INTEGER DEFAULT 1")
-            logger.info("✅ Database migrated: 'level' column added.")
         except Exception:
-            pass  # Колонка вже є
+            pass
             
         await db.execute(
             '''
@@ -62,7 +60,6 @@ async def get_player(user_id: int) -> Optional[Player]:
         async with db.execute("SELECT * FROM players WHERE user_id = ?", (user_id,)) as cursor:
             row = await cursor.fetchone()
             if row:
-                # Безпечне отримання level (якщо раптом NULL)
                 lvl = row['level'] if 'level' in row.keys() and row['level'] else 1
                 return Player(
                     user_id=row['user_id'],
@@ -89,26 +86,36 @@ async def get_or_create_player(user_id: int, username: str = "") -> Player:
         await db.commit()
     return Player(user_id, username)
 
+# --- ФУНКЦІЯ, ЯКОЇ НЕ ВИСТАЧАЛО ДЛЯ ADMIN.PY ---
+async def update_player(user_id: int, **kwargs) -> None:
+    """Оновлює довільні поля гравця (використовується адмінкою)."""
+    if not kwargs: return
+    
+    set_parts = []
+    values = []
+    for key, value in kwargs.items():
+        set_parts.append(f"{key} = ?")
+        values.append(value)
+    
+    values.append(user_id)
+    sql = f"UPDATE players SET {', '.join(set_parts)} WHERE user_id = ?"
+    
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(sql, tuple(values))
+        await db.commit()
+
 async def update_player_stats(user_id: int, is_spy: bool, is_winner: bool) -> tuple[int, int, int]:
-    """
-    Оновлює статистику, нараховує XP та рівень.
-    Повертає (old_level, current_xp, xp_needed)
-    """
     player = await get_or_create_player(user_id)
     old_level = player.level
     
-    # 1. Нарахування XP
     xp_gain = 0
     if is_winner:
         xp_gain = 20 if is_spy else 10
         
     new_total_xp = player.total_xp + xp_gain
-    
-    # 2. Перерахунок рівня
     new_level, current_progress_xp, xp_needed = get_level_from_xp(new_total_xp)
     
     async with aiosqlite.connect(DB_PATH) as db:
-        # Будуємо SQL запит
         sql = "UPDATE players SET total_xp = ?, level = ?, games_played = games_played + 1"
         
         if is_winner:
