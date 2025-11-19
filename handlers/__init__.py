@@ -1,17 +1,21 @@
 from aiogram import Dispatcher, Router
-# Імпортуємо модулі з поточної папки (handlers)
 from . import admin, game, user
 
 def setup_handlers(dp: Dispatcher) -> None:
     """Налаштовує всі обробники подій"""
     main_router = Router()
     
-    # Підключаємо роутери
-    main_router.include_router(user.router)
-    main_router.include_router(game.router)
+    # ВАЖЛИВО: Порядок має значення!
+    # 1. Спочатку Адмінка (щоб працювала завжди)
     main_router.include_router(admin.router)
     
-    # Додаємо в диспетчер
+    # 2. Потім Гра (щоб перехоплювати стани введення коду)
+    main_router.include_router(game.router)
+    
+    # 3. В кінці - звичайні юзерські команди (щоб не перебивати гру)
+    main_router.include_router(user.router)
+    
+    # Підключаємо головний роутер до диспетчера
     dp.include_router(main_router)
 
 __all__ = ['setup_handlers']
