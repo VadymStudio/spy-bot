@@ -1,15 +1,17 @@
 import asyncio
 import time
+import logging
 from typing import List, Dict, Optional
 
 from bot import bot
-from config import matchmaking_queue, rooms
-from config import add_active_user  # optional use if needed
-from database.models import Room
-from keyboards.keyboards import in_lobby_menu
+from config import matchmaking_queue, rooms, add_active_user
+from keyboards.keyboards import in_lobby_menu, main_menu
 from utils.helpers import generate_room_token
+from database.models import Room, UserState
 
-# Internal state for matchmaking timing
+logger = logging.getLogger(__name__)
+
+# Час, коли гравець став у чергу {user_id: timestamp}
 _enqueued_at: Dict[int, float] = {}
 _queue_last_change: float = time.time()
 _processor_task: Optional[asyncio.Task] = None
@@ -17,153 +19,135 @@ _last_notify_ts: float = 0.0
 
 MM_MIN = 3
 MM_MAX = 6
-
-
-def _mark_change() -> None:
-    global _queue_last_change
-    _queue_last_change = time.time()
-    # also mark for potential notify
-
-
-async def _notify_queue() -> None:
-    """Notify all users currently in the queue about live count. Debounced to avoid spam."""
-    global _last_notify_ts
-    now = time.time()
-    if now - _last_notify_ts < 2.0:  # debounce 2s
-        return
-    _last_notify_ts = now
-    n = len(matchmaking_queue)
-    if n <= 0:
-        return
-    remaining = max(0, MM_MIN - n)
-    text = (
-        f"⏳ У черзі: <b>{n}</b>/{MM_MAX}. "
-        + ("Чекаємо ще гравців…" if remaining > 0 else "Скоро формуємо кімнати…")
-    )
-    for uid in list(matchmaking_queue):
-        try:
-            await bot.send_message(uid, text, parse_mode="HTML")
-        except Exception:
-            pass
-
+MM_TIMEOUT = 120  # 2 хвилини
 
 def enqueue_user(user_id: int) -> None:
+    """Додає гравця в чергу."""
     if user_id not in matchmaking_queue:
         matchmaking_queue.append(user_id)
         _enqueued_at[user_id] = time.time()
         _mark_change()
-        # schedule notify (fire-and-forget)
-        try:
-            asyncio.create_task(_notify_queue())
-        except Exception:
-            pass
-
 
 def dequeue_user(user_id: int) -> None:
+    """Видаляє гравця з черги."""
     if user_id in matchmaking_queue:
         matchmaking_queue.remove(user_id)
-        _enqueued_at.pop(user_id, None)
-        _mark_change()
-        try:
-            asyncio.create_task(_notify_queue())
-        except Exception:
-            pass
+    if user_id in _enqueued_at:
+        del _enqueued_at[user_id]
+    _mark_change()
 
+def _mark_change() -> None:
+    global _queue_last_change
+    _queue_last_change = time.time()
 
-def _optimal_partition(n: int) -> List[int]:
-    """Return a list of room sizes (3..6) that sum to n or as many as possible without leaving 1-2 leftover.
-    Strategy: maximize 6's, then handle remainder by lookup.
-    """
-    sizes: List[int] = []
-    while n >= 12:
-        sizes.append(6)
-        n -= 6
-    # Handle remainder 0..11
-    mapping = {
-        0: [],
-        3: [3],
-        4: [4],
-        5: [5],
-        6: [6],
-        7: [4, 3],
-        8: [4, 4],
-        9: [6, 3],
-        10: [6, 4],  # or [5,5]
-        11: [6, 5],
-    }
-    if n in mapping:
-        sizes.extend(mapping[n])
-        return sizes
-    # For n in {1,2}, we cannot form a room; ignore for now
-    return sizes
-
-
-def _force_full_room_ready() -> bool:
-    """Return True if we should force-start a full room of 6 based on 10s wait for the earliest in that block."""
-    if len(matchmaking_queue) < MM_MAX:
-        return False
-    block = matchmaking_queue[:MM_MAX]
-    first = block[0]
-    t0 = _enqueued_at.get(first, time.time())
-    return (time.time() - t0) >= 10
-
-
-async def _create_rooms_from_queue(group_sizes: List[int]) -> None:
-    idx = 0
-    for size in group_sizes:
+async def _create_rooms_from_queue(sizes: List[int]) -> None:
+    """Створює кімнати для заданих розмірів груп."""
+    from handlers.game import user_states  # Імпорт тут, щоб уникнути циклічності, якщо треба
+    
+    for size in sizes:
         if len(matchmaking_queue) < size:
             break
-        players = matchmaking_queue[:size]
-        del matchmaking_queue[:size]
-        for uid in players:
-            _enqueued_at.pop(uid, None)
+            
+        # Беремо гравців
+        players = []
+        for _ in range(size):
+            if matchmaking_queue:
+                uid = matchmaking_queue.pop(0)
+                _enqueued_at.pop(uid, None)
+                players.append(uid)
+        
+        if not players:
+            continue
+
         token = generate_room_token()
-        while token in rooms:
-            token = generate_room_token()
-        admin_id = players[0]
-        room = Room(token=token, admin_id=admin_id, last_activity=int(time.time()))
+        
+        # Отримуємо імена (треба робити запит до API або кешу, тут спрощено)
+        # В реальності краще брати з БД або кешу user.py, але поки беремо ID
+        players_dict = {}
         for uid in players:
-            room.players[uid] = f"Гравець {len(room.players)+1}"
+            players_dict[uid] = f"Гравець-{uid}" 
+
+        # Створюємо кімнату
+        room = Room(
+            token=token,
+            admin_id=players[0], # Перший стає адміном
+            players=players_dict,
+            player_roles={},
+            player_votes={},
+            early_votes=set()
+        )
+        # Важливо: ініціалізуємо позивні
+        room.player_callsigns = {}
+        
         rooms[token] = room
-        # notify
+        
+        # Сповіщаємо
         for uid in players:
+            # Встановлюємо стан (це милиця, бо user_states в game.py, але працюватиме)
+            # Найкраще перенести user_states в окремий файл states_storage.py, але поки так:
             try:
                 await bot.send_message(
                     uid,
                     (
-                        "🎮 Знайдено кімнату!\n"
-                        f"🔑 Код: {token}\n"
+                        "🎮 <b>Кімнату знайдено!</b>\n"
+                        f"🔑 Код: <code>{token}</code>\n"
                         f"👥 Гравців: {len(players)}/{MM_MAX}\n\n"
-                        "Очікування старту гри..."
+                        "Чекаємо поки адмін запустить гру..."
                     ),
+                    parse_mode="HTML",
                     reply_markup=in_lobby_menu,
                 )
-            except Exception:
-                pass
-        idx += size
-
+                # Якщо це адмін, даємо йому кнопку старту
+                if uid == players[0]:
+                    from keyboards.keyboards import get_in_lobby_keyboard
+                    await bot.send_message(
+                        uid, 
+                        "Ви адміністратор кімнати!", 
+                        reply_markup=get_in_lobby_keyboard(True, token)
+                    )
+            except Exception as e:
+                logger.error(f"Failed to notify {uid}: {e}")
 
 async def _processor_loop() -> None:
+    """Фоновий процес, який формує пари і перевіряє тайм-аути."""
     try:
         while True:
             await asyncio.sleep(1)
+            now = time.time()
+            
+            # 1. ПЕРЕВІРКА ТАЙМ-АУТІВ
+            # Копіюємо ключі, бо змінюємо словник під час ітерації
+            for uid, enqueued_time in list(_enqueued_at.items()):
+                if now - enqueued_time > MM_TIMEOUT:
+                    dequeue_user(uid)
+                    try:
+                        await bot.send_message(
+                            uid, 
+                            "⏰ <b>Час пошуку вийшов (2 хв).</b>\nСпробуйте пізніше або створіть власну кімнату.", 
+                            parse_mode="HTML",
+                            reply_markup=main_menu
+                        )
+                    except Exception:
+                        pass
+
+            # 2. ФОРМУВАННЯ КІМНАТ
             qlen = len(matchmaking_queue)
             if qlen < MM_MIN:
                 continue
-            # Force-start for full block of 6 if waited 10s
-            if _force_full_room_ready():
+            
+            # Якщо назбиралось 6 людей - одразу старт
+            if qlen >= MM_MAX:
                 await _create_rooms_from_queue([MM_MAX])
-                _mark_change()
                 continue
-            # If queue stable for >=5s, do optimal partition
-            if (time.time() - _queue_last_change) >= 5:
-                sizes = _optimal_partition(qlen)
-                if sizes:
-                    await _create_rooms_from_queue(sizes)
-                    _mark_change()
+            
+            # Якщо люди чекають більше 10 сек і їх достатньо (3+) - запускаємо
+            # (Можна налаштувати логіку "хвиль", але поки проста)
+            oldest_wait = now - min(_enqueued_at.values()) if _enqueued_at else 0
+            if oldest_wait > 15 and qlen >= MM_MIN:
+                await _create_rooms_from_queue([qlen])
+
     except asyncio.CancelledError:
         return
-
 
 def start_matchmaking_processor() -> None:
     global _processor_task
